@@ -19,10 +19,16 @@ def get_model():
             import logging
             logging.disable(logging.CRITICAL)
             os.environ["FUNASR_LOG_LEVEL"] = "ERROR"
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
             from funasr import AutoModel
             try:
                 import torch
-                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                if torch.cuda.is_available():
+                    device = "cuda:0"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
             except ImportError:
                 device = "cpu"
             model = AutoModel(model="iic/SenseVoiceSmall", hub="ms", device=device)

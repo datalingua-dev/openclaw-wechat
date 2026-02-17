@@ -73,7 +73,7 @@
 - Node.js 环境（npm 可用）
 - 企业微信管理员权限
 - 公网可访问的服务器或隧道（用于接收企业微信回调）
-- （可选）Python 3 + [FunASR](https://github.com/modelscope/FunASR) + FFmpeg —— 用于本地语音转文字
+- （可选）Python 3 + [FunASR](https://github.com/modelscope/FunASR) + PyTorch + FFmpeg —— 用于本地语音转文字（支持 CUDA / Apple MPS / CPU）
 
 ### 🛠️ 安装
 
@@ -263,8 +263,10 @@ brew install ffmpeg        # macOS
 # 或 apt install ffmpeg    # Linux
 
 # Python 依赖
-pip install funasr modelscope
+pip install funasr modelscope torch torchaudio
 ```
+
+> 🍎 **Apple Silicon (M1/M2/M3/M4) 支持：** `stt.py` 会自动检测并使用 MPS (Metal Performance Shaders) 加速推理。首次运行时模型会从 ModelScope 自动下载（约 1GB）。
 
 **独立使用：**
 
@@ -337,8 +339,8 @@ openclaw logs -f | grep wecom
 
 1. 确认已安装 FFmpeg：`ffmpeg -version`
 2. 确认已安装 Python 依赖：`python3 -c "from funasr import AutoModel"`
-3. 首次运行会从 ModelScope 下载模型，需要网络连接
-4. `stt.py` 会自动检测 CUDA GPU，无 GPU 时自动使用 CPU
+3. 首次运行会从 ModelScope 下载模型（约 1GB），需要网络连接
+4. `stt.py` 会自动检测设备：CUDA GPU → Apple MPS → CPU（按优先级依次降级）
 
 ### 🏗️ 架构
 
@@ -478,7 +480,7 @@ python3 skills/wecom-notify/scripts/send_wecom.py --file /path/to/report.pdf
 - Node.js environment (npm available)
 - WeCom (Enterprise WeChat) admin access
 - Public-facing server or tunnel (for receiving WeCom callbacks)
-- (Optional) Python 3 + [FunASR](https://github.com/modelscope/FunASR) + FFmpeg -- for local voice-to-text
+- (Optional) Python 3 + [FunASR](https://github.com/modelscope/FunASR) + PyTorch + FFmpeg -- for local voice-to-text (supports CUDA / Apple MPS / CPU)
 
 ### 🛠️ Installation
 
@@ -610,8 +612,10 @@ brew install ffmpeg        # macOS
 # or apt install ffmpeg    # Linux
 
 # Python dependencies
-pip install funasr modelscope
+pip install funasr modelscope torch torchaudio
 ```
+
+> 🍎 **Apple Silicon (M1/M2/M3/M4):** `stt.py` auto-detects and uses MPS (Metal Performance Shaders) for accelerated inference. The model (~1GB) is downloaded from ModelScope on first run.
 
 **Standalone usage:**
 
@@ -653,8 +657,8 @@ python3 stt.py /path/to/audio.wav
 #### Voice Recognition Failed
 1. Verify FFmpeg is installed: `ffmpeg -version`
 2. Verify Python deps: `python3 -c "from funasr import AutoModel"`
-3. First run downloads the model from ModelScope (requires internet)
-4. `stt.py` auto-detects CUDA GPU; falls back to CPU automatically
+3. First run downloads the model (~1GB) from ModelScope (requires internet)
+4. `stt.py` auto-detects device: CUDA GPU → Apple MPS → CPU (in priority order)
 
 ### 🏗️ Architecture
 
