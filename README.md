@@ -1,10 +1,6 @@
-# 🤖 OpenClaw WeCom Plugin / 企业微信插件
+# 🤖 OpenClaw WeCom 企业微信插件
 
-> 🇨🇳 [中文](#-中文文档) | 🇬🇧 [English](#-english-documentation)
-
----
-
-## 📖 中文文档
+> ⭐ 如果觉得有用，请点击右上角的 **Star** 支持一下！
 
 ### 🔍 项目概述
 
@@ -65,7 +61,6 @@
 | 🎙️ 语音 | ✅ | ❌ | 企业微信自带识别 + 本地 FunASR SenseVoice STT（AMR→WAV→文本） |
 | 📹 视频 | ✅ | ✅ | 自动下载保存，支持发送视频消息 |
 | 📎 文件 | ✅ | ✅ | 自动下载，可读类型自动交给 AI 分析 |
-| 🔗 链接 | ✅ | ❌ | 提取标题/描述/URL，可用 WebFetch 获取内容 |
 
 ### 📦 前置要求
 
@@ -113,7 +108,6 @@ npm install
 ```
 
 > 💡 **注意**：插件 ID 为 `clawdbot-wecom`（保持与上游兼容）。配置中请使用此 ID，而非 `openclaw-wecom`。
-> 💡 **Note**: The plugin ID is `clawdbot-wecom` (for backward compatibility with upstream). Use this ID in configuration, not `openclaw-wecom`.
 
 ### ⚙️ 配置（详细步骤）
 
@@ -263,10 +257,12 @@ brew install ffmpeg        # macOS
 # 或 apt install ffmpeg    # Linux
 
 # Python 依赖
-pip install funasr modelscope torch torchaudio
+pip install funasr modelscope torch torchaudio torchcodec
 ```
 
 > 🍎 **Apple Silicon (M1/M2/M3/M4) 支持：** `stt.py` 会自动检测并使用 MPS (Metal Performance Shaders) 加速推理。首次运行时模型会从 ModelScope 自动下载（约 1GB）。
+>
+> ⚠️ **macOS launchd 部署注意：** 如果 OpenClaw 以 launchd 服务运行，默认 `python3` 可能找不到 ML 依赖。需在 plist 中设置环境变量 `WECOM_STT_PYTHON` 指向正确的 Python 路径（如 conda 环境的 python3）。
 
 **独立使用：**
 
@@ -444,339 +440,24 @@ python3 skills/wecom-notify/scripts/send_wecom.py --file /path/to/report.pdf
 
 ---
 
-## 🇬🇧 English Documentation
-
-### 🔍 Overview
-
-**openclaw-wecom** is a **WeCom (Enterprise WeChat) channel plugin** for [OpenClaw](https://openclaw.ai) (formerly ClawdBot/Moltbot). It connects your AI agent to WeCom via a self-built application, enabling intelligent conversations. Once connected, **personal WeChat users can also chat** with your AI (via "My Enterprise" > "WeChat Plugin" QR code linking).
-
-> 🍴 This project is forked from [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat) (v0.1.0, by "勾勾的数字生命") and has been significantly extended for compatibility with newer versions of OpenClaw.
-
-### ✨ Key Differences from Upstream
-
-| Feature | Upstream (v0.1.0) | This Fork (v0.3.1) |
-|---------|-------------------|---------------------|
-| 🎯 Platform | ClawdBot | OpenClaw (with ClawdBot backward compat) |
-| 📄 Manifest | `clawdbot.plugin.json` | `openclaw.plugin.json` + `clawdbot.plugin.json` |
-| ⚙️ Config | `~/.clawdbot/clawdbot.json` | `~/.openclaw/openclaw.json` |
-| 📨 Messages | Text, Image, Voice | Text, Image, Voice, **Video**, **File**, **Link** |
-| 🎙️ Voice STT | WeCom built-in only | WeCom built-in + **local FunASR SenseVoice** |
-| 🖥️ Chat UI | None | **Transcript sync + real-time broadcast** |
-| 🌐 Proxy | None | **WECOM_PROXY env var** |
-| ✂️ Splitting | By character | **By UTF-8 byte with binary search** |
-
-### 📊 Supported Message Types
-
-| Type | Receive | Send | Notes |
-|:----:|:-------:|:----:|-------|
-| 📝 Text | ✅ | ✅ | Full support, auto-segmentation by byte limit |
-| 🖼️ Image | ✅ | ✅ | AI Vision recognition, saved to temp files |
-| 🎙️ Voice | ✅ | ❌ | WeCom built-in + local FunASR SenseVoice (AMR→WAV→Text) |
-| 📹 Video | ✅ | ✅ | Auto-download and save |
-| 📎 File | ✅ | ✅ | Auto-download, readable types auto-analyzed by AI |
-| 🔗 Link | ✅ | ❌ | Extracts title/description/URL |
-
-### 📦 Prerequisites
-
-- [OpenClaw](https://openclaw.ai) installed and running (`openclaw doctor` passes)
-- Node.js environment (npm available)
-- WeCom (Enterprise WeChat) admin access
-- Public-facing server or tunnel (for receiving WeCom callbacks)
-- (Optional) Python 3 + [FunASR](https://github.com/modelscope/FunASR) + PyTorch + FFmpeg -- for local voice-to-text (supports CUDA / Apple MPS / CPU)
-
-### 🛠️ Installation
-
-#### Option 1: CLI Install
-
-```bash
-openclaw plugin install --path /path/to/openclaw-wecom
-```
-
-#### Option 2: Manual Install
-
-```bash
-git clone https://github.com/xueheng-li/openclaw-wecom.git
-cd openclaw-wecom
-npm install
-```
-
-Then add to `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": ["/path/to/openclaw-wecom"]
-    },
-    "entries": {
-      "clawdbot-wecom": {
-        "enabled": true
-      }
-    }
-  }
-}
-```
-
-### ⚙️ Configuration
-
-#### Step 1: Create a WeCom Self-Built App 🏢
-
-1. Log in to [WeCom Admin Console](https://work.weixin.qq.com/wework_admin/frame)
-2. Go to **Application Management** > **Self-Built** > **Create Application**
-3. Note the **AgentId** and **Secret**
-
-#### Step 2: Get Enterprise Info 🆔
-
-1. On the admin console homepage, click **My Enterprise**
-2. Note the **Corp ID**
-
-#### Step 3: Configure Callback 📨
-
-1. Go to your app > **Receive Messages** > **Set API Receive**
-2. Fill in:
-   - **URL**: `https://your-domain/wecom/callback`
-   - **Token**: A random string
-   - **EncodingAESKey**: Click to randomly generate
-3. ⚠️ **Do NOT save yet!** Start the OpenClaw service first.
-
-#### Step 4: Set Environment Variables 🔑
-
-In `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "env": {
-    "vars": {
-      "WECOM_CORP_ID": "your_corp_id",
-      "WECOM_CORP_SECRET": "your_app_secret",
-      "WECOM_AGENT_ID": "your_agent_id",
-      "WECOM_CALLBACK_TOKEN": "your_token",
-      "WECOM_CALLBACK_AES_KEY": "your_43_char_aes_key",
-      "WECOM_WEBHOOK_PATH": "/wecom/callback",
-      "WECOM_PROXY": ""
-    }
-  }
-}
-```
-
-#### Step 5: Configure Gateway 🌐
-
-```json
-{
-  "gateway": {
-    "port": 18789,
-    "mode": "local",
-    "bind": "lan"
-  }
-}
-```
-
-> ⚠️ `bind` must be `"lan"` (not `"localhost"`) for WeCom callbacks to reach the gateway.
-
-#### Step 6: Set Up Public Access 🔗
-
-WeCom must be able to reach your callback URL. Recommended: Cloudflare Tunnel.
-
-```bash
-brew install cloudflared
-cloudflared tunnel create openclaw
-cloudflared tunnel route dns openclaw your-domain
-cloudflared tunnel --url http://localhost:18789 run openclaw
-```
-
-#### Step 7: Start and Verify 🚀
-
-```bash
-# Restart gateway
-openclaw gateway restart
-
-# Check plugin loaded
-openclaw plugin list
-
-# Verify webhook is reachable
-curl https://your-domain/wecom/callback
-# Should return "wecom webhook ok"
-```
-
-Then go back to the WeCom admin console and **save** the callback configuration.
-
-### 🎙️ Local Voice-to-Text (stt.py)
-
-This fork includes `stt.py` which uses [FunASR SenseVoice-Small](https://modelscope.cn/models/iic/SenseVoiceSmall) for local speech recognition, independent of WeCom's built-in voice recognition.
-
-**Pipeline:** Voice AMR → FFmpeg → WAV (16kHz mono) → FunASR SenseVoice → Text
-
-**Setup:**
-
-```bash
-# FFmpeg
-brew install ffmpeg        # macOS
-# or apt install ffmpeg    # Linux
-
-# Python dependencies
-pip install funasr modelscope torch torchaudio
-```
-
-> 🍎 **Apple Silicon (M1/M2/M3/M4):** `stt.py` auto-detects and uses MPS (Metal Performance Shaders) for accelerated inference. The model (~1GB) is downloaded from ModelScope on first run.
-
-**Standalone usage:**
-
-```bash
-python3 stt.py /path/to/audio.wav
-```
-
-> 💡 If WeCom provides a Recognition field (built-in STT), that is used first. Local STT is only invoked as a fallback.
-
-> 🤖 **AI Agent Auto-Deploy:** See [`docs/stt-deploy-guide.md`](docs/stt-deploy-guide.md) for a step-by-step multi-environment (CUDA / MPS / CPU) deployment guide designed for AI coding agents (Claude Code, Cursor, etc.) to follow automatically.
-
-### 🔧 Environment Variables Reference
-
-| Variable | Required | Default | Description |
-|----------|:--------:|---------|-------------|
-| `WECOM_CORP_ID` | ✅ | — | WeCom Enterprise Corp ID |
-| `WECOM_CORP_SECRET` | ✅ | — | Self-built app Secret |
-| `WECOM_AGENT_ID` | ✅ | — | Self-built app Agent ID |
-| `WECOM_CALLBACK_TOKEN` | ✅ | — | Callback verification Token |
-| `WECOM_CALLBACK_AES_KEY` | ✅ | — | Callback AES encryption key (43-char Base64) |
-| `WECOM_WEBHOOK_PATH` | ❌ | `/wecom/callback` | Webhook path |
-| `WECOM_PROXY` | ❌ | — | HTTP proxy for outbound WeCom API calls (e.g. `http://10.x.x.x:8888`) |
-
-### 🔍 Troubleshooting
-
-#### Callback Verification Failed
-1. Check if the URL is publicly accessible: `curl https://your-domain/wecom/callback`
-2. Ensure Token and AESKey match the WeCom admin console
-3. Check logs: `openclaw logs -f | grep wecom`
-
-#### No Reply to Messages
-1. Look for `wecom inbound` in logs
-2. Verify AI model configuration (`agents.defaults.model`)
-3. Check for error logs
-
-#### access_token Fetch Failed
-1. Verify `WECOM_CORP_ID` and `WECOM_CORP_SECRET`
-2. Ensure the app's visibility scope includes the test user
-3. Confirm the server can reach `qyapi.weixin.qq.com` (set `WECOM_PROXY` if behind a firewall)
-
-#### Voice Recognition Failed
-1. Verify FFmpeg is installed: `ffmpeg -version`
-2. Verify Python deps: `python3 -c "from funasr import AutoModel"`
-3. First run downloads the model (~1GB) from ModelScope (requires internet)
-4. `stt.py` auto-detects device: CUDA GPU → Apple MPS → CPU (in priority order)
-
-### 🏗️ Architecture
-
-```
-┌──────────────┐         ┌──────────────────┐         ┌───────────────┐
-│  WeCom /     │ ──XML──▶│ OpenClaw Gateway │ ──────▶ │  AI Agent     │
-│  Personal WX │         │  (port 18789)    │         │  (LLM)        │
-│              │ ◀──API──│                  │ ◀────── │               │
-└──────────────┘         └──────┬───────────┘         └───────────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    ▼           ▼           ▼
-              ┌──────────┐ ┌────────┐ ┌──────────┐
-              │ Crypto   │ │ STT    │ │ Chat UI  │
-              │ AES-256  │ │ FunASR │ │ Broadcast│
-              └──────────┘ └────────┘ └──────────┘
-```
-
-**Message Flow:**
-
-1. 📩 User sends a message in WeCom / personal WeChat
-2. 🔒 WeCom servers send an encrypted XML callback to your webhook URL
-3. 🔓 Plugin verifies the signature and decrypts the message (AES-256-CBC)
-4. ⚡ Immediately returns HTTP 200 (WeCom requires a response within 5 seconds)
-5. 🔄 Async processing based on message type (text/image/voice/video/file/link)
-6. 🤖 AI agent generates a reply
-7. 📤 Reply is converted from Markdown to plain text, auto-segmented, and sent back
-8. 🖥️ Simultaneously written to Transcript and broadcast to Chat UI
-
-### 📁 Project Structure
-
-```
-openclaw-wecom/
-├── index.js                 # Entry point (re-export)
-├── src/
-│   └── index.js             # Plugin main logic (1400+ lines)
-├── stt.py                   # 🎙️ Local voice recognition (FunASR SenseVoice)
-├── openclaw.plugin.json     # OpenClaw plugin manifest (new format)
-├── clawdbot.plugin.json     # ClawdBot plugin manifest (legacy compat)
-├── package.json             # npm package config (v0.3.1)
-├── .env.example             # Environment variable template
-├── skills/
-│   └── wecom-notify/        # 📨 Claude Code WeCom notification skill
-│       ├── SKILL.md
-│       └── scripts/
-│           └── send_wecom.py
-├── docs/
-│   └── channels/
-│       └── wecom.md         # Channel documentation
-├── CHANGELOG.md             # Version changelog
-└── LICENSE                  # MIT License
-```
-
-### 📨 Claude Code WeCom Notification Skill
-
-This repo also includes a standalone **Claude Code skill** (`wecom-notify`) for sending WeCom messages directly from Claude Code. It is an **independent tool** that calls the WeCom API directly — no OpenClaw plugin required.
-
-#### Installing the Skill
-
-Copy the `skills/wecom-notify/` directory to `~/.claude/skills/`:
-
-```bash
-cp -r skills/wecom-notify ~/.claude/skills/
-```
-
-#### Usage
-
-Use the `/wecom-notify` command in Claude Code, or let the AI invoke it automatically:
-
-```bash
-# Send a text message
-python3 skills/wecom-notify/scripts/send_wecom.py "Hello, this is a test message"
-
-# Specify recipient
-python3 skills/wecom-notify/scripts/send_wecom.py "Message content" --to UserName
-
-# Send an image
-python3 skills/wecom-notify/scripts/send_wecom.py --image /path/to/photo.png
-
-# Send a file
-python3 skills/wecom-notify/scripts/send_wecom.py --file /path/to/report.pdf
-```
-
-#### Features
-
-- 🔧 **Zero dependencies**: Uses only Python stdlib (`urllib.request`, `json`) — no `pip install` needed
-- 📄 Reads WeCom config automatically from `~/.openclaw/openclaw.json` (reuses OpenClaw env vars)
-- 📝 Supports text (2048-byte limit), images (jpg/png/gif, ≤2MB), and files (any format, ≤20MB)
-- 🌐 Supports `WECOM_PROXY` for proxy routing
-
-### 📜 Version History
-
-See [CHANGELOG.md](./CHANGELOG.md) for the full version history.
-
----
-
-## 🔗 相关链接 / Related Links
-
-- 🌐 [OpenClaw Official Site](https://openclaw.ai)
-- 📖 [企业微信开发文档 / WeCom Developer Docs](https://developer.work.weixin.qq.com/document/)
-- 🔐 [企业微信消息加解密 / WeCom Message Encryption](https://developer.work.weixin.qq.com/document/path/90968)
-- 🍴 [Upstream: dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)
+## 🔗 相关链接
+
+- 🌐 [OpenClaw 官方网站](https://openclaw.ai)
+- 📖 [企业微信开发文档](https://developer.work.weixin.qq.com/document/)
+- 🔐 [企业微信消息加解密](https://developer.work.weixin.qq.com/document/path/90968)
+- 🍴 [上游项目：dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)
 - 🎙️ [FunASR SenseVoice](https://modelscope.cn/models/iic/SenseVoiceSmall)
 
-## 📄 许可证 / License
+## 📄 许可证
 
 [MIT License](./LICENSE)
 
-## 🙏 致谢 / Acknowledgments
+## 🙏 致谢
 
-- 🍴 原始项目 / Original project: [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat) by **勾勾的数字生命** ([@dingxiang-me](https://github.com/dingxiang-me))
-- 🤖 [OpenClaw](https://openclaw.ai) by Peter Steinberger and the OpenClaw community
-- 🎙️ [FunASR SenseVoice](https://github.com/modelscope/FunASR) by Alibaba DAMO Academy
+- 🍴 原始项目：[dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)，作者 **勾勾的数字生命** ([@dingxiang-me](https://github.com/dingxiang-me))
+- 🤖 [OpenClaw](https://openclaw.ai)，由 Peter Steinberger 和 OpenClaw 社区开发
+- 🎙️ [FunASR SenseVoice](https://github.com/modelscope/FunASR)，由阿里巴巴达摩院开发
 
-## 🤝 贡献 / Contributing
+## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！ / Issues and Pull Requests are welcome!
+欢迎提交 Issue 和 Pull Request！

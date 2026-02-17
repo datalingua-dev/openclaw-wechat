@@ -1167,7 +1167,8 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
 
           // Whisper STT
           const sttScriptPath = join(dirname(new URL(import.meta.url).pathname), "..", "stt.py");
-          const { stdout } = await execFileAsync("python3", [sttScriptPath, voiceWavPath], { timeout: 30000 });
+          const _sttPython = process.env.WECOM_STT_PYTHON || "python3";
+          const { stdout } = await execFileAsync(_sttPython, [sttScriptPath, voiceWavPath], { timeout: 30000 });
           const transcription = stdout.trim();
           api.logger.info?.(`wecom: transcribed voice: ${transcription.slice(0, 80)}`);
 
@@ -1292,7 +1293,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
     // 构建 Session 上下文对象
     const ctxPayload = {
       Body: body,
-      RawBody: content || "",
+      RawBody: content || messageText || "",
       From: isGroupChat ? `wecom:group:${chatId}` : `wecom:${fromUser}`,
       To: `wecom:${fromUser}`,
       SessionKey: sessionId,
