@@ -4,7 +4,7 @@
 
 ### 🔍 项目概述
 
-**openclaw-wecom** 是一个 [OpenClaw](https://openclaw.ai)（原 ClawdBot/Moltbot）的 <img src="docs/images/wecom-icon.png" width="16" height="16"> **企业微信渠道插件**，让你的 AI 智能体通过企业微信自建应用与用户对话。接入企业微信后，<img src="docs/images/wechat-icon.png" width="16" height="16"> **个人微信用户也可以直接对话**——只需在企业微信管理后台「我的企业 → 微信插件」中扫码关联即可。
+**openclaw-wechat** 是一个 [OpenClaw](https://openclaw.ai)（原 ClawdBot/Moltbot）的 <img src="docs/images/wecom-icon.png" width="16" height="16"> **企业微信渠道插件**，让你的 AI 智能体通过企业微信自建应用与用户对话。接入企业微信后，<img src="docs/images/wechat-icon.png" width="16" height="16"> **个人微信用户也可以直接对话**——只需在企业微信管理后台「我的企业 → 微信插件」中扫码关联即可。
 
 > 🍴 本项目 fork 自 [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)（v0.1.0，作者：勾勾的数字生命），并进行了大量功能扩展以兼容新版 OpenClaw。
 
@@ -76,7 +76,7 @@
 #### 方式一：CLI 安装
 
 ```bash
-openclaw plugin install --path /path/to/openclaw-wecom
+openclaw plugin install --path /path/to/openclaw-wechat
 ```
 
 #### 方式二：手动安装
@@ -84,8 +84,8 @@ openclaw plugin install --path /path/to/openclaw-wecom
 1. 克隆本仓库：
 
 ```bash
-git clone https://github.com/xueheng-li/openclaw-wecom.git
-cd openclaw-wecom
+git clone https://github.com/Xueheng-Li/openclaw-wechat.git
+cd openclaw-wechat
 npm install
 ```
 
@@ -96,7 +96,7 @@ npm install
   "plugins": {
     "load": {
       "paths": [
-        "/path/to/openclaw-wecom"
+        "/path/to/openclaw-wechat"
       ]
     },
     "entries": {
@@ -108,7 +108,7 @@ npm install
 }
 ```
 
-> 💡 **注意**：插件 ID 为 `clawdbot-wecom`（保持与上游兼容）。配置中请使用此 ID，而非 `openclaw-wecom`。
+> 💡 **注意**：插件 ID 为 `clawdbot-wecom`（保持与上游兼容）。配置中请使用此 ID，而非 `openclaw-wechat`。
 
 ### ⚙️ 配置（详细步骤）
 
@@ -376,7 +376,7 @@ openclaw logs -f | grep wecom
 ### 📁 项目结构
 
 ```
-openclaw-wecom/
+openclaw-wechat/
 ├── index.js                 # 入口文件（重导出）
 ├── src/
 │   └── index.js             # 插件主逻辑（1400+ 行）

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**openclaw-wecom** is a WeCom (Enterprise WeChat) channel plugin for OpenClaw/ClawdBot. It enables AI agents to communicate with users through WeCom's self-built applications, supporting bidirectional messaging with multiple media types.
+**openclaw-wechat** is a WeCom (Enterprise WeChat) channel plugin for OpenClaw/ClawdBot. It enables AI agents to communicate with users through WeCom's self-built applications, supporting bidirectional messaging with multiple media types.
 
 Forked from [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat) with extensive enhancements.
 
@@ -12,7 +12,7 @@ Forked from [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenC
 
 ```bash
 # Install as OpenClaw plugin
-openclaw plugin install --path /path/to/openclaw-wecom
+openclaw plugin install --path /path/to/openclaw-wechat
 npm install
 
 # Run / restart
