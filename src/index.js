@@ -3,7 +3,7 @@ import { XMLParser, XMLBuilder } from "fast-xml-parser";
 import { normalizePluginHttpPath } from "clawdbot/plugin-sdk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFile, unlink, mkdir, appendFile } from "node:fs/promises";
+import { readFile, writeFile, unlink, mkdir, appendFile } from "node:fs/promises";
 import { existsSync, appendFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -487,6 +487,21 @@ async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId }) {
 
 // 从 URL 下载媒体文件
 async function fetchMediaFromUrl(url) {
+  // 支持本地文件路径
+  if (url.startsWith("/") || url.startsWith("~")) {
+    const filePath = url.startsWith("~") ? url.replace("~", homedir()) : url;
+    const buffer = await readFile(filePath);
+    const ext = filePath.split(".").pop()?.toLowerCase() || "";
+    const mimeMap = {
+      jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp",
+      mp4: "video/mp4", mov: "video/quicktime", avi: "video/x-msvideo",
+      amr: "audio/amr", mp3: "audio/mpeg", wav: "audio/wav",
+      pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      md: "text/markdown", txt: "text/plain",
+    };
+    const contentType = mimeMap[ext] || "application/octet-stream";
+    return { buffer, contentType };
+  }
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Failed to fetch media from URL: ${res.status}`);
@@ -494,6 +509,19 @@ async function fetchMediaFromUrl(url) {
   const buffer = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get("content-type") || "application/octet-stream";
   return { buffer, contentType };
+}
+
+// 根据文件路径/URL 判断企业微信媒体类型和文件名
+function resolveWecomMediaType(mediaUrl) {
+  const filename = mediaUrl.split("/").pop() || "file";
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const imageExts = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+  const videoExts = ["mp4", "mov", "avi"];
+  const voiceExts = ["amr", "mp3", "wav"];
+  if (imageExts.includes(ext)) return { type: "image", filename };
+  if (videoExts.includes(ext)) return { type: "video", filename };
+  if (voiceExts.includes(ext)) return { type: "voice", filename };
+  return { type: "file", filename };
 }
 
 const WecomChannelPlugin = {
@@ -566,16 +594,22 @@ const WecomChannelPlugin = {
         return { ok: false, error: new Error("WeCom not configured") };
       }
       const { corpId, corpSecret, agentId } = config;
-      // 尝试发送图片
       if (mediaUrl) {
         try {
           const { buffer } = await fetchMediaFromUrl(mediaUrl);
-          const mediaId = await uploadWecomMedia({ corpId, corpSecret, type: "image", buffer, filename: "image.jpg" });
-          await sendWecomImage({ corpId, corpSecret, agentId, toUser: to, mediaId });
+          const { type, filename } = resolveWecomMediaType(mediaUrl);
+          const mediaId = await uploadWecomMedia({ corpId, corpSecret, type, buffer, filename });
+          if (type === "image") {
+            await sendWecomImage({ corpId, corpSecret, agentId, toUser: to, mediaId });
+          } else if (type === "video") {
+            await sendWecomVideo({ corpId, corpSecret, agentId, toUser: to, mediaId });
+          } else {
+            await sendWecomFile({ corpId, corpSecret, agentId, toUser: to, mediaId });
+          }
         } catch (err) {
-          // 图片发送失败，降级为文本
+          // 媒体发送失败，降级为文本
           if (text) {
-            await sendWecomText({ corpId, corpSecret, agentId, toUser: to, text: `${text}\n\n[图片: ${mediaUrl}]` });
+            await sendWecomText({ corpId, corpSecret, agentId, toUser: to, text: `${text}\n\n[文件: ${mediaUrl}]` });
             return { ok: true, provider: "wecom" };
           }
         }
@@ -600,16 +634,18 @@ const WecomChannelPlugin = {
       const userId = to.startsWith("wecom:") ? to.slice(6) : to;
 
       // 如果有媒体附件，先发送媒体
-      if (mediaUrl && mediaType === "image") {
+      if (mediaUrl) {
         try {
           const { buffer } = await fetchMediaFromUrl(mediaUrl);
-          const mediaId = await uploadWecomMedia({
-            corpId, corpSecret,
-            type: "image",
-            buffer,
-            filename: "image.jpg",
-          });
-          await sendWecomImage({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          const { type, filename } = resolveWecomMediaType(mediaUrl);
+          const mediaId = await uploadWecomMedia({ corpId, corpSecret, type, buffer, filename });
+          if (type === "image") {
+            await sendWecomImage({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          } else if (type === "video") {
+            await sendWecomVideo({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          } else {
+            await sendWecomFile({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          }
         } catch (mediaErr) {
           // 媒体发送失败不阻止文本发送，只记录警告
           console.warn?.(`wecom: failed to send media: ${mediaErr.message}`);

@@ -80,3 +80,30 @@ Plugin manifest: `openclaw.plugin.json` (plugin ID: `clawdbot-wecom`)
 - **Comments** — bilingual (Chinese + English) throughout
 - **Adding message types** — parse in `parseIncomingXml()` → handle in `processInboundMessage()` → create `sendWecom<Type>()` → update README/CHANGELOG
 - **Security** — XXE prevention (entity processing disabled), signature verification on all callbacks, 1MB body limit
+
+## Lessons Learned (Production Issues & Fixes)
+
+### Voice STT (stt.py)
+- `stt.py` uses FunASR SenseVoice-Small which lives in a conda environment (e.g. `sci`), not the system Python
+- Set `WECOM_STT_PYTHON` env var in `openclaw.json → env.vars` to point to the correct Python binary (e.g. `/path/to/anaconda3/envs/sci/bin/python3`)
+- The code reads `process.env.WECOM_STT_PYTHON || "python3"` — if unset, it falls back to system python which won't have funasr
+
+### Outbound Media (sendMedia / deliverReply)
+- **OpenClaw requires both `sendText` AND `sendMedia`** in the outbound object — if either is missing, `createPluginHandler()` returns null → "Outbound not configured"
+- `sendMedia` must handle all file types, not just images — use `resolveWecomMediaType()` to detect type from file extension (image/video/file)
+- `fetchMediaFromUrl` must support local file paths (`/` and `~` prefixes) in addition to HTTP URLs — use `readFile` for local, `fetch` for remote
+- `deliverReply` should also use `resolveWecomMediaType()` instead of checking `mediaType === "image"`
+
+### OpenClaw Media Security Model
+- OpenClaw's core enforces `mediaLocalRoots` — only files within allowed directories can be sent: `tmpdir`, `~/.openclaw/media`, `~/.openclaw/agents`, `~/.openclaw/workspace`, `~/.openclaw/sandboxes`
+- Files outside these roots are silently blocked by `assertLocalMediaAllowed()` — the plugin's sendMedia never gets called
+- **Workaround**: copy files to `~/.openclaw/workspace/` before sending, then clean up after
+
+### Flat Channel Config (no `accounts` field)
+- When config uses flat structure (`channels.wecom.corpId` directly, no `accounts` sub-object), `listAccountIds` must return `["default"]` if `corpId` exists
+- `resolveAccount` must fall back to top-level wecom config when `accounts[id]` is undefined
+
+### Cron / Scheduled Messages
+- Best pattern: isolated session + `agentTurn` + `delivery.mode: "none"` + agent calls `message` tool itself
+- Main session `systemEvent` can timeout when session is busy
+- Cron jobs auto-disable after 3 consecutive errors

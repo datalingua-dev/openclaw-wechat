@@ -10,12 +10,13 @@
 
 ### ✨ 与上游的主要区别
 
-| 特性 | 上游 (OpenClaw-Wechat v0.1.0) | 本 Fork (v0.3.1) |
+| 特性 | 上游 (OpenClaw-Wechat v0.1.0) | 本 Fork (v0.3.4) |
 |------|------|------|
 | 🎯 平台兼容 | ClawdBot | OpenClaw（同时保留 ClawdBot 兼容） |
 | 📄 插件描述文件 | `clawdbot.plugin.json` | `openclaw.plugin.json` + `clawdbot.plugin.json` |
 | ⚙️ 配置文件 | `~/.clawdbot/clawdbot.json` | `~/.openclaw/openclaw.json` |
 | 📨 消息类型 | 文本、图片、语音 | 文本、图片、语音、**视频**、**文件**、**链接** |
+| 📤 发送类型 | 仅文本 | 文本、**图片**、**视频**、**文件**（自动类型识别） |
 | 🎙️ 语音识别 | 仅企业微信自带 | 企业微信自带 + **本地 FunASR SenseVoice STT** |
 | 🖥️ Chat UI | 无 | **消息同步到 Transcript + 实时广播** |
 | 🌐 代理支持 | 无 | **WECOM_PROXY 环境变量** |
