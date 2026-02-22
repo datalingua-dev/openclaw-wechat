@@ -200,7 +200,53 @@ cloudflared tunnel --url http://localhost:18789 run openclaw
 
 其他方案：SSH 隧道、Tailscale、Nginx 反向代理 + 端口转发等。
 
-#### 第六步：启动并验证 🚀
+#### 第六步：配置企业可信 IP 🛡️
+
+企业微信要求调用 API（发送消息、获取 token 等）的服务器 IP 在白名单中。
+
+1. 查询你服务器的**出口公网 IP**：
+
+```bash
+curl -s https://ifconfig.me
+```
+
+> ⚠️ 注意：这里需要的是你服务器**发出请求时的 IP**（出口 IP），不是 Cloudflare Tunnel 的 IP。Cloudflare Tunnel 只处理入站流量，服务器调用企业微信 API 时仍然走自己的公网出口。
+
+2. 登录 [企业微信管理后台](https://work.weixin.qq.com/wework_admin/frame)
+3. 进入 **应用管理** → 选择你创建的自建应用
+4. 滚动到页面底部，找到 **企业可信 IP**，点击 **配置**：
+
+   ![企业可信 IP 位置](docs/images/ip-whitelist.png)
+
+5. 添加上一步查到的 IP 地址
+
+> 💡 如果调用 API 报错 `60020`（not allow to access from your ip），检查日志中提示的 IP 并添加到白名单即可。
+
+**动态 IP 场景（家用宽带 / 无固定公网 IP 的服务器）**：
+
+如果你的服务器没有固定公网 IP，推荐通过一台有固定 IP 的 VPS 做正向代理：
+
+1. 在 VPS 上安装代理（如 tinyproxy）：
+   ```bash
+   sudo apt-get install -y tinyproxy
+   ```
+2. 编辑 `/etc/tinyproxy/tinyproxy.conf`，设置监听地址和访问控制（建议只允许内网访问）
+3. 在插件配置中设置 `WECOM_PROXY` 环境变量指向代理：
+   ```jsonc
+   // ~/.openclaw/openclaw.json
+   {
+     "env": {
+       "vars": {
+         "WECOM_PROXY": "http://你的VPS内网IP:8888"
+       }
+     }
+   }
+   ```
+4. 将 VPS 的**公网 IP** 添加到企业可信 IP 白名单
+
+> 插件内置了 `wecomFetch()` 函数，会自动通过 `WECOM_PROXY` 代理所有发往 `qyapi.weixin.qq.com` 的请求。如果使用 ZeroTier / Tailscale 等虚拟内网连接 VPS，代理地址填内网 IP 即可。
+
+#### 第七步：启动并验证 🚀
 
 1. 重启 OpenClaw Gateway：
 
@@ -224,7 +270,7 @@ curl https://你的域名/wecom/callback
 4. 回到企业微信管理后台，点击**保存**回调配置
 5. 如果验证通过，配置完成！🎉
 
-#### 第七步：关联个人微信 📱（可选）
+#### 第八步：关联个人微信 📱（可选）
 
 如果希望**个人微信**也能直接与 AI 对话，需在企业微信管理后台开启微信插件：
 
@@ -333,12 +379,63 @@ openclaw logs -f | grep wecom
 2. 检查应用的可见范围是否包含测试用户
 3. 确认服务器能访问 `qyapi.weixin.qq.com`（如有代理需设置 `WECOM_PROXY`）
 
+#### ❌ 报错 `60020` (not allow to access from your ip)
+
+企业微信 API 拒绝了你服务器的出口 IP。解决方法：
+1. 查看错误日志中提示的 IP 地址
+2. 将该 IP 添加到企业微信管理后台 → 应用管理 → 企业可信 IP
+3. 如果服务器是动态 IP，参考第六步配置代理方案
+
+#### ❌ 报错 "Outbound not configured"
+
+OpenClaw 要求插件同时提供 `sendText` **和** `sendMedia` 两个出站方法。如果缺少任一方法，`createPluginHandler()` 会返回 null，导致此错误。确认插件版本包含完整的出站配置。
+
 #### ❌ 语音识别失败
 
 1. 确认已安装 FFmpeg：`ffmpeg -version`
 2. 确认已安装 Python 依赖：`python3 -c "from funasr import AutoModel"`
 3. 首次运行会从 ModelScope 下载模型（约 1GB），需要网络连接
 4. `stt.py` 会自动检测设备：CUDA GPU → Apple MPS → CPU（按优先级依次降级）
+
+#### ❌ 语音消息发送了但 AI 没收到内容
+
+`RawBody` 为空字符串 `""` 时会短路 `??` 运算符的回退链，导致 AI 收到空消息。确认插件版本中 `RawBody` 设置为 `content || messageText || ""`（而非 `content || ""`）。
+
+#### ❌ macOS 上 STT 找不到 Python / 模型加载失败
+
+macOS 通过 launchd 启动 OpenClaw 时，PATH 不包含 conda 环境。解决方法：
+
+1. 在 `openclaw.json` 的 `env.vars` 中设置 `WECOM_STT_PYTHON` 指向 conda 环境中的 Python：
+   ```jsonc
+   {
+     "env": {
+       "vars": {
+         "WECOM_STT_PYTHON": "/path/to/anaconda3/envs/sci/bin/python3"
+       }
+     }
+   }
+   ```
+2. 如遇 Apple Silicon MPS 不支持某些操作，设置 `PYTORCH_ENABLE_MPS_FALLBACK=1`
+3. 较新版本 torchaudio 需要额外安装 `torchcodec`：`pip install torchcodec`
+
+#### ❌ AI 无法"看到"用户发送的图片
+
+图片会保存到本地磁盘并通过工具指令告知 AI 读取，而非以 base64 多模态方式传入。AI 需要主动调用 Read 工具才能看到图片内容，这取决于模型是否正确使用了工具。
+
+#### ❌ sendMedia 发送文件失败 / 文件被静默拦截
+
+OpenClaw 核心层通过 `mediaLocalRoots` 限制可发送的本地文件路径，仅允许以下目录：
+- `tmpdir`（系统临时目录）
+- `~/.openclaw/media`
+- `~/.openclaw/agents`
+- `~/.openclaw/workspace`
+- `~/.openclaw/sandboxes`
+
+目录外的文件会被 `assertLocalMediaAllowed()` 静默拦截。解决方法：先将文件复制到 `~/.openclaw/workspace/` 再发送。
+
+#### ❌ Node.js `fetch()` 不走代理
+
+Node.js 原生 `fetch()` **不支持** `HTTPS_PROXY` 环境变量。插件使用 `undici.ProxyAgent` 配合 `dispatcher` 参数实现代理，仅需设置 `WECOM_PROXY` 环境变量即可，无需额外配置系统代理。
 
 ### 🏗️ 架构
 
