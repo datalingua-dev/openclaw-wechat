@@ -574,11 +574,39 @@ const WecomChannelPlugin = {
     },
     resolveAccount: (cfg, accountId) => {
       const id = accountId ?? "default";
+      // 1. 优先从 channels.wecom.accounts 读取
       const account = cfg.channels?.wecom?.accounts?.[id];
-      if (account) return account;
-      // 兼容扁平配置：直接返回顶层 wecom 配置
-      const wc = cfg.channels?.wecom;
-      if (wc?.corpId) return { accountId: id, corpId: wc.corpId, corpSecret: wc.corpSecret, agentId: wc.agentId };
+      if (account && account.corpId && account.corpSecret && account.agentId) {
+        return {
+          accountId: id,
+          corpId: account.corpId,
+          corpSecret: account.corpSecret,
+          agentId: asNumber(account.agentId),
+          callbackToken: account.callbackToken,
+          callbackAesKey: account.callbackAesKey,
+          webhookPath: account.webhookPath || `/wecom/${id}`
+        };
+      }
+      // 2. 回退到环境变量
+      const envVars = cfg?.env?.vars ?? {};
+      const accountPrefix = id === "default" ? "WECOM" : `WECOM_${id.toUpperCase()}`;
+      const corpId = envVars[`${accountPrefix}_CORP_ID`] || envVars.WECOM_CORP_ID;
+      const corpSecret = envVars[`${accountPrefix}_CORP_SECRET`] || envVars.WECOM_CORP_SECRET;
+      const agentId = envVars[`${accountPrefix}_AGENT_ID`] || envVars.WECOM_AGENT_ID;
+      const callbackToken = envVars[`${accountPrefix}_CALLBACK_TOKEN`] || envVars.WECOM_CALLBACK_TOKEN;
+      const callbackAesKey = envVars[`${accountPrefix}_CALLBACK_AES_KEY`] || envVars.WECOM_CALLBACK_AES_KEY;
+      const webhookPath = envVars[`${accountPrefix}_WEBHOOK_PATH`] || (id === "default" ? "/wecom/callback" : `/wecom/${id}`);
+      if (corpId && corpSecret && agentId) {
+        return {
+          accountId: id,
+          corpId,
+          corpSecret,
+          agentId: asNumber(agentId),
+          callbackToken,
+          callbackAesKey,
+          webhookPath
+        };
+      }
       return { accountId: id };
     },
   },
@@ -589,10 +617,10 @@ const WecomChannelPlugin = {
       if (!trimmed) return { ok: false, error: new Error("WeCom requires --to <UserId>") };
       return { ok: true, to: trimmed };
     },
-    sendText: async ({ to, text }) => {
-      const config = getWecomConfig();
+    sendText: async ({ to, text, accountId }) => {
+      const config = getWecomConfig(gatewayRuntime, accountId);
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
-        return { ok: false, error: new Error("WeCom not configured (check channels.wecom in clawdbot.json)") };
+        return { ok: false, error: new Error(`WeCom not configured for accountId=${accountId || "default"}`) };
       }
       const userId = to.startsWith("wecom:") ? to.slice(6) : to;
       await sendWecomText({ corpId: config.corpId, corpSecret: config.corpSecret, agentId: config.agentId, toUser: userId, text });
@@ -635,9 +663,9 @@ const WecomChannelPlugin = {
   inbound: {
     // 当消息需要回复时，clawdbot 会调用这个方法
     deliverReply: async ({ to, text, accountId, mediaUrl, mediaType }) => {
-      const config = getWecomConfig();
+      const config = getWecomConfig(gatewayRuntime, accountId);
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
-        throw new Error("WeCom not configured (check channels.wecom in clawdbot.json)");
+        throw new Error(`WeCom not configured for accountId=${accountId || "default"}`);
       }
       const { corpId, corpSecret, agentId } = config;
       // to 格式为 "wecom:userid"，需要提取 userid
@@ -827,12 +855,24 @@ function getWecomConfig(api, accountId = null) {
   const envVars = cfg?.env?.vars ?? {};
   const accountPrefix = targetAccountId === "default" ? "WECOM" : `WECOM_${targetAccountId.toUpperCase()}`;
 
-  let corpId = envVars[`${accountPrefix}_CORP_ID`] || (targetAccountId === "default" ? envVars.WECOM_CORP_ID : null);
-  let corpSecret = envVars[`${accountPrefix}_CORP_SECRET`] || (targetAccountId === "default" ? envVars.WECOM_CORP_SECRET : null);
-  let agentId = envVars[`${accountPrefix}_AGENT_ID`] || (targetAccountId === "default" ? envVars.WECOM_AGENT_ID : null);
-  let callbackToken = envVars[`${accountPrefix}_CALLBACK_TOKEN`] || (targetAccountId === "default" ? envVars.WECOM_CALLBACK_TOKEN : null);
-  let callbackAesKey = envVars[`${accountPrefix}_CALLBACK_AES_KEY`] || (targetAccountId === "default" ? envVars.WECOM_CALLBACK_AES_KEY : null);
-  let webhookPath = envVars[`${accountPrefix}_WEBHOOK_PATH`] || (targetAccountId === "default" ? envVars.WECOM_WEBHOOK_PATH : null) || "/wecom/callback";
+  let corpId = envVars[`${accountPrefix}_CORP_ID`];
+  let corpSecret = envVars[`${accountPrefix}_CORP_SECRET`];
+  let agentId = envVars[`${accountPrefix}_AGENT_ID`];
+  let callbackToken = envVars[`${accountPrefix}_CALLBACK_TOKEN`];
+  let callbackAesKey = envVars[`${accountPrefix}_CALLBACK_AES_KEY`];
+  let webhookPath = envVars[`${accountPrefix}_WEBHOOK_PATH`];
+
+  // 如果特定账户配置不存在，回退到默认 WECOM_* 配置
+  if (!corpId && targetAccountId !== "default") {
+    corpId = envVars.WECOM_CORP_ID;
+    corpSecret = envVars.WECOM_CORP_SECRET;
+    agentId = envVars.WECOM_AGENT_ID;
+    callbackToken = envVars.WECOM_CALLBACK_TOKEN;
+    callbackAesKey = envVars.WECOM_CALLBACK_AES_KEY;
+  }
+  if (!webhookPath) {
+    webhookPath = targetAccountId === "default" ? "/wecom/callback" : `/wecom/${targetAccountId}`;
+  }
 
   // 4. 最后回退到进程环境变量
   if (!corpId) corpId = requireEnv(`${accountPrefix}_CORP_ID`) || requireEnv("WECOM_CORP_ID");
@@ -874,213 +914,191 @@ function listWecomAccountIds(api) {
   // 2. 从 env.vars 读取 (兼容旧配置)
   const envVars = cfg?.env?.vars ?? {};
   for (const key of Object.keys(envVars)) {
-    const match = key.match(/^WECOM_([A-Z0-9]+)_CORP_ID$/);
-    if (match && match[1] !== "CORP") {
-      accountIds.add(match[1].toLowerCase());
+    // 检测 WECOM_<ACCOUNT>_CORP_ID 或 WECOM_<ACCOUNT>_WEBHOOK_PATH
+    const matchCorp = key.match(/^WECOM_([A-Z0-9]+)_CORP_ID$/);
+    const matchWebhook = key.match(/^WECOM_([A-Z0-9]+)_WEBHOOK_PATH$/);
+    if (matchCorp && matchCorp[1] !== "CORP") {
+      accountIds.add(matchCorp[1].toLowerCase());
+    } else if (matchWebhook && matchWebhook[1] !== "WEBHOOK") {
+      accountIds.add(matchWebhook[1].toLowerCase());
     }
   }
 
   return Array.from(accountIds);
 }
 
-export default function register(api) {
-  // 保存 runtime 引用
-  gatewayRuntime = api.runtime;
+// 创建 webhook 处理器工厂函数
+function createWebhookHandler(api, accountId) {
+  return async (req, res) => {
+    const config = getWecomConfig(api, accountId);
+    const token = config?.callbackToken;
+    const aesKey = config?.callbackAesKey;
 
-  // 初始化配置
-  const cfg = getWecomConfig(api);
-  if (cfg) {
-    api.logger.info?.(`wecom: config loaded (corpId=${cfg.corpId?.slice(0, 8)}...)`);
-  } else {
-    api.logger.warn?.("wecom: no configuration found (check channels.wecom in clawdbot.json)");
-  }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const msg_signature = url.searchParams.get("msg_signature") ?? "";
+    const timestamp = url.searchParams.get("timestamp") ?? "";
+    const nonce = url.searchParams.get("nonce") ?? "";
+    const echostr = url.searchParams.get("echostr") ?? "";
 
-  api.registerChannel({ plugin: WecomChannelPlugin });
-
-  // 注册一个 gateway 方法来获取 broadcast 上下文
-  // 这个方法会在插件加载时被调用，用于捕获 broadcast 上下文
-  api.registerGatewayMethod("wecom.init", async (ctx, nodeId, params) => {
-    gatewayBroadcastCtx = ctx;
-    api.logger.info?.("wecom: gateway broadcast context captured");
-    return { ok: true };
-  });
-
-  // 注册一个 gateway 方法用于广播消息到 Chat UI
-  api.registerGatewayMethod("wecom.broadcast", async (ctx, nodeId, params) => {
-    const { sessionKey, runId, message, state } = params || {};
-    if (!sessionKey || !message) {
-      return { ok: false, error: { message: "missing sessionKey or message" } };
+    // Health check
+    if (req.method === "GET" && !echostr) {
+      res.statusCode = token && aesKey ? 200 : 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end(token && aesKey ? "wecom webhook ok" : "wecom webhook not configured");
+      return;
     }
 
-    const chatPayload = {
-      runId: runId || `wecom-${Date.now()}`,
-      sessionKey,
-      seq: 0,
-      state: state || "final",
-      message: {
-        role: message.role || "user",
-        content: [{ type: "text", text: message.text || "" }],
-        timestamp: Date.now(),
-      },
-    };
+    if (!token || !aesKey) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("WeCom plugin not configured (missing token/aesKey)");
+      return;
+    }
 
-    ctx.broadcast("chat", chatPayload);
-    ctx.bridgeSendToSession(sessionKey, "chat", chatPayload);
-
-    // 保存 broadcast 上下文供后续使用
-    gatewayBroadcastCtx = ctx;
-
-    return { ok: true };
-  });
-
-  const webhookPath = cfg?.webhookPath || "/wecom/callback";
-  const normalizedPath = normalizePluginHttpPath(webhookPath, "/wecom/callback") ?? "/wecom/callback";
-
-  api.registerHttpRoute({
-    path: normalizedPath,
-    handler: async (req, res) => {
-      const config = getWecomConfig(api);
-      const token = config?.callbackToken;
-      const aesKey = config?.callbackAesKey;
-
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const msg_signature = url.searchParams.get("msg_signature") ?? "";
-      const timestamp = url.searchParams.get("timestamp") ?? "";
-      const nonce = url.searchParams.get("nonce") ?? "";
-      const echostr = url.searchParams.get("echostr") ?? "";
-
-      // Health check
-      if (req.method === "GET" && !echostr) {
-        res.statusCode = token && aesKey ? 200 : 500;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.end(token && aesKey ? "wecom webhook ok" : "wecom webhook not configured");
-        return;
-      }
-
-      if (!token || !aesKey) {
-        res.statusCode = 500;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.end("WeCom plugin not configured (missing token/aesKey)");
-        return;
-      }
-
-      if (req.method === "GET") {
-        // URL verification
-        const expected = computeMsgSignature({ token, timestamp, nonce, encrypt: echostr });
-        if (!msg_signature || expected !== msg_signature) {
-          res.statusCode = 401;
-          res.setHeader("Content-Type", "text/plain; charset=utf-8");
-          res.end("Invalid signature");
-          return;
-        }
-        const { msg: plainEchostr } = decryptWecom({ aesKey, cipherTextBase64: echostr });
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.end(plainEchostr);
-        return;
-      }
-
-      if (req.method !== "POST") {
-        res.statusCode = 405;
-        res.setHeader("Allow", "GET, POST");
-        res.end();
-        return;
-      }
-
-      const rawXml = await readRequestBody(req);
-      const incoming = parseIncomingXml(rawXml);
-      const encrypt = incoming?.Encrypt;
-      if (!encrypt) {
-        res.statusCode = 400;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.end("Missing Encrypt");
-        return;
-      }
-
-      const expected = computeMsgSignature({ token, timestamp, nonce, encrypt });
+    if (req.method === "GET") {
+      const expected = computeMsgSignature({ token, timestamp, nonce, encrypt: echostr });
       if (!msg_signature || expected !== msg_signature) {
         res.statusCode = 401;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.end("Invalid signature");
         return;
       }
-
-      // ACK quickly (WeCom expects fast response within 5 seconds)
+      const { msg: plainEchostr } = decryptWecom({ aesKey, cipherTextBase64: echostr });
       res.statusCode = 200;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("success");
+      res.end(plainEchostr);
+      return;
+    }
 
-      const { msg: decryptedXml } = decryptWecom({ aesKey, cipherTextBase64: encrypt });
-      const msgObj = parseIncomingXml(decryptedXml);
+    if (req.method !== "POST") {
+      res.statusCode = 405;
+      res.setHeader("Allow", "GET, POST");
+      res.end();
+      return;
+    }
 
-      // 检测是否为群聊消息
-      // 企业微信群聊消息会有 ChatId 字段（外部群）或通过应用消息接收
-      const chatId = msgObj.ChatId || null;
-      const isGroupChat = !!chatId;
+    const rawXml = await readRequestBody(req);
+    const incoming = parseIncomingXml(rawXml);
+    const encrypt = incoming?.Encrypt;
+    if (!encrypt) {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("Missing Encrypt");
+      return;
+    }
 
-      api.logger.info?.(
-        `wecom inbound: FromUserName=${msgObj?.FromUserName} MsgType=${msgObj?.MsgType} ChatId=${chatId || "N/A"} Content=${(msgObj?.Content ?? "").slice?.(0, 80)}`
-      );
+    const expected = computeMsgSignature({ token, timestamp, nonce, encrypt });
+    if (!msg_signature || expected !== msg_signature) {
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("Invalid signature");
+      return;
+    }
 
-      const fromUser = msgObj.FromUserName;
-      const msgType = msgObj.MsgType;
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("success");
 
-      // 异步处理消息，不阻塞响应
-      if (msgType === "text" && msgObj?.Content) {
-        processInboundMessage({ api, fromUser, content: msgObj.Content, msgType: "text", chatId, isGroupChat }).catch((err) => {
-          api.logger.error?.(`wecom: async message processing failed: ${err.message}`);
-        });
-      } else if (msgType === "image" && msgObj?.MediaId) {
-        processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "image", picUrl: msgObj.PicUrl, chatId, isGroupChat }).catch((err) => {
-          api.logger.error?.(`wecom: async image processing failed: ${err.message}`);
-        });
-      } else if (msgType === "voice" && msgObj?.MediaId) {
-        // Recognition 字段包含企业微信自动语音识别的结果（需要在企业微信后台开启）
-        processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "voice", recognition: msgObj.Recognition, chatId, isGroupChat }).catch((err) => {
-          api.logger.error?.(`wecom: async voice processing failed: ${err.message}`);
-        });
-      } else if (msgType === "video" && msgObj?.MediaId) {
-        processInboundMessage({
-          api, fromUser,
-          mediaId: msgObj.MediaId,
-          msgType: "video",
-          thumbMediaId: msgObj.ThumbMediaId,
-          chatId, isGroupChat
-        }).catch((err) => {
-          api.logger.error?.(`wecom: async video processing failed: ${err.message}`);
-        });
-      } else if (msgType === "file" && msgObj?.MediaId) {
-        processInboundMessage({
-          api, fromUser,
-          mediaId: msgObj.MediaId,
-          msgType: "file",
-          fileName: msgObj.FileName,
-          fileSize: msgObj.FileSize,
-          chatId, isGroupChat
-        }).catch((err) => {
-          api.logger.error?.(`wecom: async file processing failed: ${err.message}`);
-        });
-      } else if (msgType === "link") {
-        // 链接分享消息
-        processInboundMessage({
-          api, fromUser,
-          msgType: "link",
-          linkTitle: msgObj.Title,
-          linkDescription: msgObj.Description,
-          linkUrl: msgObj.Url,
-          linkPicUrl: msgObj.PicUrl,
-          chatId, isGroupChat
-        }).catch((err) => {
-          api.logger.error?.(`wecom: async link processing failed: ${err.message}`);
-        });
-      } else {
-        api.logger.info?.(`wecom: ignoring unsupported message type=${msgType}`);
-      }
-    },
+    const { msg: decryptedXml } = decryptWecom({ aesKey, cipherTextBase64: encrypt });
+    const msgObj = parseIncomingXml(decryptedXml);
+
+    const chatId = msgObj.ChatId || null;
+    const isGroupChat = !!chatId;
+
+    api.logger.info?.(
+      `wecom[${accountId}] inbound: FromUserName=${msgObj?.FromUserName} MsgType=${msgObj?.MsgType} ChatId=${chatId || "N/A"}`
+    );
+
+    const fromUser = msgObj.FromUserName;
+    const msgType = msgObj.MsgType;
+
+    if (msgType === "text" && msgObj?.Content) {
+      processInboundMessage({ api, fromUser, content: msgObj.Content, msgType: "text", chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async message processing failed: ${err.message}`);
+      });
+    } else if (msgType === "image" && msgObj?.MediaId) {
+      processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "image", picUrl: msgObj.PicUrl, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async image processing failed: ${err.message}`);
+      });
+    } else if (msgType === "voice" && msgObj?.MediaId) {
+      processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "voice", recognition: msgObj.Recognition, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async voice processing failed: ${err.message}`);
+      });
+    } else if (msgType === "video" && msgObj?.MediaId) {
+      processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "video", thumbMediaId: msgObj.ThumbMediaId, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async video processing failed: ${err.message}`);
+      });
+    } else if (msgType === "file" && msgObj?.MediaId) {
+      processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "file", fileName: msgObj.FileName, fileSize: msgObj.FileSize, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async file processing failed: ${err.message}`);
+      });
+    } else if (msgType === "link") {
+      processInboundMessage({ api, fromUser, msgType: "link", linkTitle: msgObj.Title, linkDescription: msgObj.Description, linkUrl: msgObj.Url, linkPicUrl: msgObj.PicUrl, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async link processing failed: ${err.message}`);
+      });
+    } else {
+      api.logger.info?.(`wecom[${accountId}]: ignoring unsupported message type=${msgType}`);
+    }
+  };
+}
+
+export default function register(api) {
+  gatewayRuntime = api.runtime;
+
+  const cfg = getWecomConfig(api);
+  if (cfg) {
+    api.logger.info?.(`wecom: config loaded (corpId=${cfg.corpId?.slice(0, 8)}..., accountId=${cfg.accountId || "default"})`);
+  } else {
+    api.logger.warn?.("wecom: no configuration found");
+  }
+
+  api.registerChannel({ plugin: WecomChannelPlugin });
+
+  api.registerGatewayMethod("wecom.init", async (ctx, nodeId, params) => {
+    gatewayBroadcastCtx = ctx;
+    api.logger.info?.("wecom: gateway broadcast context captured");
+    return { ok: true };
   });
 
-  api.logger.info?.(`wecom: registered webhook at ${normalizedPath}`);
+  api.registerGatewayMethod("wecom.broadcast", async (ctx, nodeId, params) => {
+    const { sessionKey, runId, message, state } = params || {};
+    if (!sessionKey || !message) {
+      return { ok: false, error: { message: "missing sessionKey or message" } };
+    }
+    const chatPayload = {
+      runId: runId || `wecom-${Date.now()}`,
+      sessionKey,
+      seq: 0,
+      state: state || "final",
+      message: { role: message.role || "user", content: [{ type: "text", text: message.text || "" }], timestamp: Date.now() },
+    };
+    ctx.broadcast("chat", chatPayload);
+    ctx.bridgeSendToSession(sessionKey, "chat", chatPayload);
+    gatewayBroadcastCtx = ctx;
+    return { ok: true };
+  });
+
+  // 为每个账户注册独立的 webhook 路由
+  const accountIds = listWecomAccountIds(api);
+  for (const accountId of accountIds) {
+    const accountConfig = getWecomConfig(api, accountId);
+    if (!accountConfig) {
+      api.logger.warn?.(`wecom: skipping account "${accountId}" - no configuration`);
+      continue;
+    }
+
+    const webhookPath = accountConfig.webhookPath || (accountId === "default" ? "/wecom/callback" : `/wecom/${accountId}`);
+    const normalizedPath = normalizePluginHttpPath(webhookPath, "/wecom/callback") ?? webhookPath;
+
+    api.registerHttpRoute({
+      path: normalizedPath,
+      handler: createWebhookHandler(api, accountId),
+    });
+
+    api.logger.info?.(`wecom: registered webhook at ${normalizedPath} for account "${accountId}"`);
+  }
 }
+
 
 // 下载企业微信媒体文件
 async function downloadWecomMedia({ corpId, corpSecret, mediaId }) {
@@ -1202,8 +1220,8 @@ const COMMANDS = {
 };
 
 // 异步处理入站消息 - 使用 gateway 内部 agent runtime API
-async function processInboundMessage({ api, fromUser, content, msgType, mediaId, picUrl, recognition, thumbMediaId, fileName, fileSize, linkTitle, linkDescription, linkUrl, linkPicUrl, chatId, isGroupChat }) {
-  const config = getWecomConfig(api);
+async function processInboundMessage({ api, fromUser, content, msgType, mediaId, picUrl, recognition, thumbMediaId, fileName, fileSize, linkTitle, linkDescription, linkUrl, linkPicUrl, chatId, isGroupChat, accountId }) {
+  const config = getWecomConfig(api, accountId);
   const cfg = api.config;
   const runtime = api.runtime;
 
@@ -1217,8 +1235,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
   try {
     // 会话ID：群聊使用 wecom:group:chatId，私聊使用 wecom:userId
     // 注意：sessionKey 需要统一为小写，与 resolveAgentRoute 保持一致
-    const sessionId = isGroupChat ? `wecom:group:${chatId}`.toLowerCase() : `wecom:${fromUser}`.toLowerCase();
-    api.logger.info?.(`wecom: processing ${msgType} message for session ${sessionId}${isGroupChat ? " (group)" : ""}`);
+    const sessionAccountId = accountId || "default";
+    const sessionId = isGroupChat ? `wecom:${sessionAccountId}:group:${chatId}`.toLowerCase() : `wecom:${sessionAccountId}:${fromUser}`.toLowerCase();
+    api.logger.info?.(`wecom: processing ${msgType} message for session ${sessionId}${isGroupChat ? " (group)" : ""} (accountId=${sessionAccountId})`);
 
     // 命令检测（仅对文本消息）
     if (msgType === "text" && content?.startsWith("/")) {
@@ -1347,13 +1366,35 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         await writeFile(fileTempPath, buffer);
         api.logger.info?.(`wecom: saved file to ${fileTempPath}, size=${buffer.length} bytes`);
 
-        const readableTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf'];
-        const isReadable = readableTypes.some(t => safeFileName.toLowerCase().endsWith(t));
+                // 自动读取文档内容（支持 PDF, Word, Excel, HTML, YAML 等）
+        const autoReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.html', '.htm', '.yaml', '.yml'];
+        const isAutoRead = autoReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
 
-        if (isReadable) {
-          messageText = `[用户发送了一个文件: ${safeFileName}，已保存到: ${fileTempPath}]\n\n请使用 Read 工具查看这个文件的内容。`;
+        let fileContent = null;
+        if (isAutoRead) {
+          try {
+            // 使用文档处理器读取内容
+            const { execFile } = await import('node:child_process');
+            const { promisify } = await import('node:util');
+            const execFileAsync = promisify(execFile);
+            const docProcessor = '/home/oldbird/.openclaw/workspace/skills/doc-processor/doc_processor.py';
+            const { stdout } = await execFileAsync('python3', [docProcessor, fileTempPath], { timeout: 30000 });
+            fileContent = stdout.trim();
+            api.logger.info?.(`wecom: auto-read file content, length=${fileContent.length}`);
+          } catch (readErr) {
+            api.logger.warn?.(`wecom: failed to auto-read file: ${readErr.message}`);
+          }
+        }
+
+        if (isAutoRead && fileContent) {
+          // 自动读取成功，直接告诉 AI 文件内容
+          const preview = fileContent.length > 3000 ? fileContent.slice(0, 3000) + '\n\n...(内容过长，已截断，请使用 Read 工具查看完整文件：' + fileTempPath + ')' : fileContent;
+          messageText = `[用户发送了一个文件：${safeFileName}]\n\n文件内容如下：\n${preview}\n\n请根据文件内容回复用户。`;
+        } else if (isAutoRead) {
+          // 自动读取失败，告知路径让用户重试
+          messageText = `[用户发送了一个文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件读取失败，请告知用户并建议重新发送。`;
         } else {
-          messageText = `[用户发送了一个文件: ${safeFileName}，大小: ${fileSize || buffer.length} 字节，已保存到: ${fileTempPath}]\n\n请告知用户您已收到文件。`;
+          messageText = `[用户发送了一个文件：${safeFileName}，大小：${fileSize || buffer.length} 字节，已保存到：${fileTempPath}]\n\n请告知用户您已收到文件。`;
         }
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download file: ${downloadErr.message}`);
