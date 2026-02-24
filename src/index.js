@@ -617,10 +617,22 @@ const WecomChannelPlugin = {
       if (!trimmed) return { ok: false, error: new Error("WeCom requires --to <UserId>") };
       return { ok: true, to: trimmed };
     },
-    sendText: async ({ to, text, accountId }) => {
-      const config = getWecomConfig(gatewayRuntime, accountId);
+    sendText: async ({ to, text, accountId, sessionKey }) => {
+      // 从 sessionKey 或 to 中提取 accountId
+      let extractedAccountId = accountId;
+      if (!extractedAccountId && sessionKey) {
+        const match = sessionKey.match(/^wecom:([a-z0-9_-]+):/i);
+        if (match) extractedAccountId = match[1];
+      }
+      if (!extractedAccountId && to) {
+        const match = to.match(/^wecom:([a-z0-9_-]+):/i);
+        if (match) extractedAccountId = match[1];
+      }
+      extractedAccountId = extractedAccountId || "default";
+      
+      const config = getWecomConfig(gatewayRuntime, extractedAccountId);
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
-        return { ok: false, error: new Error(`WeCom not configured for accountId=${accountId || "default"}`) };
+        return { ok: false, error: new Error(`WeCom not configured for accountId=${extractedAccountId}`) };
       }
       const userId = to.startsWith("wecom:") ? to.slice(6) : to;
       await sendWecomText({ corpId: config.corpId, corpSecret: config.corpSecret, agentId: config.agentId, toUser: userId, text });
@@ -662,10 +674,22 @@ const WecomChannelPlugin = {
   // 入站消息处理 - clawdbot 会调用这个方法
   inbound: {
     // 当消息需要回复时，clawdbot 会调用这个方法
-    deliverReply: async ({ to, text, accountId, mediaUrl, mediaType }) => {
-      const config = getWecomConfig(gatewayRuntime, accountId);
+    deliverReply: async ({ to, text, accountId, mediaUrl, mediaType, sessionKey }) => {
+      // 从 sessionKey 或 to 中提取 accountId (格式：wecom:<accountId>:...)
+      let extractedAccountId = accountId;
+      if (!extractedAccountId && sessionKey) {
+        const match = sessionKey.match(/^wecom:([a-z0-9_-]+):/i);
+        if (match) extractedAccountId = match[1];
+      }
+      if (!extractedAccountId && to) {
+        const match = to.match(/^wecom:([a-z0-9_-]+):/i);
+        if (match) extractedAccountId = match[1];
+      }
+      extractedAccountId = extractedAccountId || "default";
+      
+      const config = getWecomConfig(gatewayRuntime, extractedAccountId);
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
-        throw new Error(`WeCom not configured for accountId=${accountId || "default"}`);
+        throw new Error(`WeCom not configured for accountId=${extractedAccountId}`);
       }
       const { corpId, corpSecret, agentId } = config;
       // to 格式为 "wecom:userid"，需要提取 userid
