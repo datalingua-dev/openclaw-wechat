@@ -272,10 +272,10 @@ class RateLimiter {
 }
 
 // API 调用限流器（最多3并发，200ms间隔）
-const apiLimiter = new RateLimiter({ maxConcurrent: 3, minInterval: 200 });
+const apiLimiter = new RateLimiter({ maxConcurrent: 10, minInterval: 100 });
 
-// 消息处理限流器（最多5并发）
-const messageProcessLimiter = new RateLimiter({ maxConcurrent: 5, minInterval: 0 });
+// 消息处理限流器（最多10并发）
+const messageProcessLimiter = new RateLimiter({ maxConcurrent: 10, minInterval: 0 });
 
 // 消息分段函数，按字节限制分割（企业微信限制 2048 字节）
 function splitWecomText(text, byteLimit = WECOM_TEXT_BYTE_LIMIT) {
