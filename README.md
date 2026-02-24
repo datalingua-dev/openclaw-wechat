@@ -8,9 +8,19 @@
 
 > 🍴 本项目 fork 自 [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)（v0.1.0，作者：勾勾的数字生命），并进行了大量功能扩展以兼容新版 OpenClaw。
 
+### 🧠 v0.3.6 — 对话记忆系统（与官方 Telegram Channel 实现一致）
+
+**解决了企业微信渠道"失忆"问题**：之前每条消息都是独立对话，AI 无法记住上下文。
+
+现在使用 OpenClaw SDK 的 `recordPendingHistoryEntry` + `buildPendingHistoryContextFromMap` 实现对话历史管理，**与官方 Telegram/Discord 渠道完全一致**：
+- 📝 自动记录用户消息和 AI 回复到内存历史
+- 🔄 每次对话自动携带最近 20 条历史上下文
+- 🗑️ `/clear` 命令同时清除 session 和内存历史
+- 📊 `/status` 显示当前历史消息数量
+
 ### ✨ 与上游的主要区别
 
-| 特性 | 上游 (OpenClaw-Wechat v0.1.0) | 本 Fork (v0.3.4) |
+| 特性 | 上游 (OpenClaw-Wechat v0.1.0) | 本 Fork (v0.3.6) |
 |------|------|------|
 | 🎯 平台兼容 | ClawdBot | OpenClaw（同时保留 ClawdBot 兼容） |
 | 📄 插件描述文件 | `clawdbot.plugin.json` | `openclaw.plugin.json` + `clawdbot.plugin.json` |
@@ -18,6 +28,7 @@
 | 📨 消息类型 | 文本、图片、语音 | 文本、图片、语音、**视频**、**文件**、**链接** |
 | 📤 发送类型 | 仅文本 | 文本、**图片**、**视频**、**文件**（自动类型识别） |
 | 🎙️ 语音识别 | 仅企业微信自带 | 企业微信自带 + **本地 FunASR SenseVoice STT** |
+| 🧠 对话历史 | 无 | **SDK 级对话记忆（与官方 Telegram 一致）** |
 | 🖥️ Chat UI | 无 | **消息同步到 Transcript + 实时广播** |
 | 🌐 代理支持 | 无 | **WECOM_PROXY 环境变量** |
 | 📝 消息分段 | 按字符 | **按字节（UTF-8），二分查找分割** |
@@ -43,7 +54,8 @@
 - [x] 📝 命令系统（`/help`、`/status`、`/clear`）
 - [x] 🔄 Markdown → 纯文本自动转换（企业微信不支持 Markdown 渲染）
 - [x] ✂️ 长消息自动分段（2048 字节限制，按 UTF-8 字节精确分割）
-- [x] 🛡️ API 限流保护（3 并发，200ms 间隔）
+- [x] 🧠 对话历史记忆（SDK 级，与官方 Telegram 一致）
+- [x] 🛡️ API 限流保护（10 并发，100ms 间隔）
 - [x] ⏳ 处理中提示（"收到您的消息，正在处理中..."）
 
 #### 🚀 高级功能
