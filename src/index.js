@@ -607,7 +607,7 @@ const WecomChannelPlugin = {
     },
     sendText: async ({ to, text, accountId, sessionKey }) => {
       // 从 sessionKey 或 to 中提取 accountId
-      // 支持多智能体格式：agent:<agentId>:wecom:<accountId>:...
+      // 支持多智能体格式: agent:<agentId>:wecom:<accountId>:...
       let extractedAccountId = accountId;
       if (!extractedAccountId && sessionKey) {
         const agentMatch = sessionKey.match(/^agent:[^:]+:wecom:([a-z0-9_-]+):/i);
@@ -667,7 +667,7 @@ const WecomChannelPlugin = {
     // 当消息需要回复时，clawdbot 会调用这个方法
     deliverReply: async ({ to, text, accountId, mediaUrl, mediaType, sessionKey }) => {
       // 从 sessionKey 或 to 中提取 accountId
-      // 支持多智能体格式：agent:<agentId>:wecom:<accountId>:...
+      // 支持多智能体格式: agent:<agentId>:wecom:<accountId>:...
       let extractedAccountId = accountId;
       if (!extractedAccountId && sessionKey) {
         const agentMatch = sessionKey.match(/^agent:[^:]+:wecom:([a-z0-9_-]+):/i);
@@ -1157,7 +1157,6 @@ async function handleHelpCommand({ api, fromUser, corpId, corpSecret, agentId })
 
 async function handleClearCommand({ api, fromUser, corpId, corpSecret, agentId, sessionId: passedSessionId }) {
   const sessionId = passedSessionId || `wecom:${fromUser.toLowerCase()}`;
-
   try {
     await execFileAsync("clawdbot", ["session", "clear", "--session-id", sessionId], { timeout: 10000 });
 
@@ -1184,7 +1183,6 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
   const historyKey = sessionId || `wecom:${fromUser}`.toLowerCase();
   const historyEntries = sessionHistories.get(historyKey) || [];
   const historyCount = historyEntries.length;
-
   const currentAgentId = resolvedAgentId || "main";
 
   // 检测语音 STT 是否可用
@@ -1194,9 +1192,9 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
   const statusText = `📊 系统状态
 
 渠道：企业微信 (WeCom)
-会话 ID: ${historyKey}
-账户 ID: ${config?.accountId || "default"}
-智能体 ID: ${currentAgentId}
+会话ID：${historyKey}
+账户ID：${config?.accountId || "default"}
+智能体ID：${currentAgentId}
 已配置账户：${accountIds.join(", ")}
 插件版本：${PLUGIN_VERSION}
 对话历史：${historyCount} 条（上限 ${DEFAULT_HISTORY_LIMIT} 条）
@@ -1241,10 +1239,14 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
   try {
     // 构建 peer 信息，用于多智能体路由匹配
     const sessionAccountId = accountId || "default";
-    const peer = isGroupChat ? { kind: "group", id: chatId } : { kind: "dm", id: fromUser.toLowerCase() };
+    const peer = isGroupChat
+      ? { kind: "group", id: chatId }
+      : { kind: "dm", id: fromUser.toLowerCase() };
 
     // 先构建一个临时 sessionKey 用于路由查询（不含 agentId）
-    const baseSessionKey = isGroupChat ? `wecom:${sessionAccountId}:group:${chatId}`.toLowerCase() : `wecom:${sessionAccountId}:${fromUser}`.toLowerCase();
+    const baseSessionKey = isGroupChat
+      ? `wecom:${sessionAccountId}:group:${chatId}`.toLowerCase()
+      : `wecom:${sessionAccountId}:${fromUser}`.toLowerCase();
 
     // 获取路由信息 —— 传入 peer 信息以支持多智能体绑定匹配
     const route = runtime.channel.routing.resolveAgentRoute({
@@ -1254,13 +1256,11 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       accountId: sessionAccountId,
       peer,
     });
-
     const resolvedAgentId = route.agentId || "main";
 
-    // 会话 ID：包含 agentId 以实现多智能体会话隔离
-    // 格式：agent:<agentId>:wecom:<accountId>:<userId>（与官方 Telegram 渠道一致）
+    // 会话ID：包含 agentId 以实现多智能体会话隔离
+    // 格式：agent:<agentId>:wecom:<accountId>:<userId> （与官方 Telegram 渠道一致）
     const sessionId = `agent:${resolvedAgentId}:${baseSessionKey}`;
-
     api.logger.info?.(`wecom: processing ${msgType} message for session ${sessionId}${isGroupChat ? " (group)" : ""} (accountId=${sessionAccountId}, agentId=${resolvedAgentId})`);
 
     // 命令检测（仅对文本消息）
@@ -1463,7 +1463,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
     // 使用之前已获取的 route 和 resolvedAgentId
 
     // 获取 storePath
-    const storePath = runtime.channel.session.resolveStorePath(cfg.session?.store, { agentId: resolvedAgentId });
+    const storePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
+      agentId: resolvedAgentId,
+    });
 
     // 格式化消息体
     const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
@@ -1546,7 +1548,13 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
     runtime.channel.activity.record({ channel: "wecom", accountId: config.accountId || "default", direction: "inbound" });
 
     // 写入用户消息到 transcript 文件（使 Chat UI 可以显示历史）
-    await writeToTranscript({ sessionKey: sessionId, role: "user", text: messageText, logger: api.logger, agentId: resolvedAgentId });
+    await writeToTranscript({
+      sessionKey: sessionId,
+      role: "user",
+      text: messageText,
+      logger: api.logger,
+      agentId: resolvedAgentId,
+    });
 
     // 广播用户消息到 Chat UI
     const inboundRunId = `wecom-inbound-${Date.now()}`;
@@ -1577,7 +1585,13 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
               api.logger.info?.(`wecom: sent AI reply to ${fromUser}: ${formattedReply.slice(0, 50)}...`);
 
               // 写入 AI 回复到 transcript 文件（使 Chat UI 可以显示历史）
-              await writeToTranscript({ sessionKey: sessionId, role: "assistant", text: payload.text, logger: api.logger, agentId: resolvedAgentId });
+              await writeToTranscript({
+                sessionKey: sessionId,
+                role: "assistant",
+                text: payload.text,
+                logger: api.logger,
+                agentId: resolvedAgentId,
+              });
 
               // 广播 AI 回复到 Chat UI
               broadcastToChatUI({ sessionKey: sessionId, role: "assistant", text: payload.text, runId: outboundRunId, state: info.kind === "final" ? "final" : "streaming" });

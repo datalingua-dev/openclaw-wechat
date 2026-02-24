@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-02-25
+
+### Added
+
+#### 多智能体路由支持 (Multi-Agent Routing)
+- **绑定匹配 (Binding Match)**：`resolveAgentRoute` 调用现在传入 `peer` 信息（区分 `dm`/`group`），支持 `openclaw.json` 中的 `bindings` 配置按 peer/accountId/channel 精确匹配到不同智能体
+- **会话隔离**：session key 格式从 `wecom:<accountId>:<user>` 升级为 `agent:<agentId>:wecom:<accountId>:<user>`，与官方 Telegram 渠道一致，不同智能体的会话完全隔离
+- **Transcript 多智能体目录**：`writeToTranscript` 现在根据 `agentId` 动态定位 `~/.openclaw/agents/<agentId>/sessions/`，不再硬编码 `agents/main/`
+- **对话历史隔离**：内存中的对话历史按 `agentId` 隔离的 session key 存储
+- **`/status` 命令增强**：显示当前智能体 ID
+- **插件能力声明**：`capabilities.multiAgent: true`
+
+### Changed
+- Outbound `sendText`/`sendMedia`/`deliverReply` 方法的 `accountId` 提取正则更新，兼容 `agent:<agentId>:wecom:<accountId>:...` 和传统 `wecom:<accountId>:...` 两种格式
+- `writeToTranscript` 优先使用 `OPENCLAW_STATE_DIR` 环境变量，回退到 `CLAWDBOT_STATE_DIR`，最后回退到 `~/.openclaw`
+- `/clear` 命令使用路由解析后的 session key（含 agentId），确保只清除目标智能体的会话
+- 插件版本升级至 0.4.0
+
 ## [0.3.5] - 2026-02-22
 
 ### Changed

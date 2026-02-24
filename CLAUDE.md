@@ -107,3 +107,11 @@ Plugin manifest: `openclaw.plugin.json` (plugin ID: `wecom`)
 - Best pattern: isolated session + `agentTurn` + `delivery.mode: "none"` + agent calls `message` tool itself
 - Main session `systemEvent` can timeout when session is busy
 - Cron jobs auto-disable after 3 consecutive errors
+
+### Multi-Agent Routing (v0.4.0)
+- Plugin passes `peer` info (`{ kind: "dm"|"group", id: "..." }`) to `resolveAgentRoute()` for binding match
+- Session key format: `agent:<agentId>:wecom:<accountId>:<userId>` (consistent with official Telegram channel)
+- `writeToTranscript` uses dynamic `agentId` path: `~/.openclaw/agents/<agentId>/sessions/`
+- Outbound `sendText`/`sendMedia`/`deliverReply` regex handles both `agent:<agentId>:wecom:<accountId>:...` and legacy `wecom:<accountId>:...` formats
+- In-memory history is keyed by agentId-inclusive session key, ensuring per-agent isolation
+- `/status` displays current `agentId`, `/clear` uses routed session key

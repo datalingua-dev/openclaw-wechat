@@ -8,15 +8,13 @@
 
 > 🍴 本项目 fork 自 [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)（v0.1.0，作者：勾勾的数字生命），并进行了大量功能扩展以兼容新版 OpenClaw。
 
-### 🧠 v0.3.6 — 对话记忆系统（与官方 Telegram Channel 实现一致）
+### 🧠 v0.4.0 — 多智能体路由支持 (Multi-Agent Routing)
 
-**解决了企业微信渠道"失忆"问题**：之前每条消息都是独立对话，AI 无法记住上下文。
-
-现在使用 OpenClaw SDK 的 `recordPendingHistoryEntry` + `buildPendingHistoryContextFromMap` 实现对话历史管理，**与官方 Telegram/Discord 渠道完全一致**：
-- 📝 自动记录用户消息和 AI 回复到内存历史
-- 🔄 每次对话自动携带最近 20 条历史上下文
-- 🗑️ `/clear` 命令同时清除 session 和内存历史
-- 📊 `/status` 显示当前历史消息数量
+**支持 OpenClaw 多智能体路由配置**：通过 `openclaw.json` 中的 `bindings` 配置，可以将不同的企业微信用户/群组路由到不同的 AI 智能体：
+- 🏠 按私信用户分配不同智能体（不同的人、不同的人格）
+- 👥 按群组绑定特定智能体
+- 🔀 按企业微信账户分配智能体
+- 🧠 会话完全隔离（每个智能体独立的历史记录和工作区）
 
 ### ✨ 与上游的主要区别
 
@@ -29,6 +27,7 @@
 | 📤 发送类型 | 仅文本 | 文本、**图片**、**视频**、**文件**（自动类型识别） |
 | 🎙️ 语音识别 | 仅企业微信自带 | 企业微信自带 + **本地 FunASR SenseVoice STT** |
 | 🧠 对话历史 | 无 | **SDK 级对话记忆（与官方 Telegram 一致）** |
+| 🏠 多智能体 | 无 | **多智能体路由（peer/accountId/channel 绑定匹配）** |
 | 🖥️ Chat UI | 无 | **消息同步到 Transcript + 实时广播** |
 | 🌐 代理支持 | 无 | **WECOM_PROXY 环境变量** |
 | 📝 消息分段 | 按字符 | **按字节（UTF-8），二分查找分割** |
@@ -60,6 +59,7 @@
 
 #### 🚀 高级功能
 - [x] 👥 多账户支持（`WECOM_<ACCOUNT>_*` 格式）
+- [x] 🏠 多智能体路由（按 peer/accountId/channel 绑定匹配不同 Agent）
 - [x] 🔒 Token 并发安全（Promise 锁）
 - [x] 🖥️ Chat UI 集成（Transcript 写入 + Gateway 实时广播）
 - [x] 🌐 HTTP 代理支持（`WECOM_PROXY`）
@@ -189,6 +189,49 @@ npm install
   }
 }
 ```
+
+#### 多智能体路由配置
+
+如果你希望不同的用户/群组被不同的 AI 智能体服务，可以配置 `agents` 和 `bindings`：
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "work",
+        "name": "Work Assistant",
+        "workspace": "~/.openclaw/workspace-work"
+      },
+      {
+        "id": "personal",
+        "default": true,
+        "name": "Personal Assistant",
+        "workspace": "~/.openclaw/workspace-personal"
+      }
+    ]
+  },
+  "bindings": [
+    {
+      "agentId": "work",
+      "match": {
+        "channel": "wecom",
+        "peer": { "kind": "dm", "id": "zhangsan" }
+      }
+    },
+    {
+      "agentId": "work",
+      "match": {
+        "channel": "wecom",
+        "peer": { "kind": "group", "id": "GROUP_CHAT_ID" }
+      }
+    },
+    {
+      "agentId": "personal",
+      "match": { "channel": "wecom" }
+    }
+  ]
+}
 
 #### 第五步：配置公网访问 🔗
 
@@ -491,7 +534,7 @@ openclaw-wechat/
 ├── stt.py                   # 🎙️ 本地语音识别（FunASR SenseVoice）
 ├── openclaw.plugin.json     # OpenClaw 插件描述文件（新格式）
 ├── clawdbot.plugin.json     # ClawdBot 插件描述文件（兼容旧版）
-├── package.json             # npm 包配置 (v0.3.6)
+├── package.json             # npm 包配置 (v0.4.0)
 ├── .env.example             # 环境变量示例
 ├── skills/
 │   └── wecom-notify/        # 📨 Claude Code WeCom 通知技能
