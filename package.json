@@ -3,7 +3,7 @@
   "version": "0.4.1",
   "private": true,
   "type": "module",
-  "description": "WeCom (\u4f01\u4e1a\u5fae\u4fe1) channel plugin for Clawdbot (internal apps).",
+  "description": "WeCom (\u4f01\u4e1a\u5fae\u4fe1) channel plugin for OpenClaw (internal apps).",
   "license": "MIT",
   "exports": "./index.js",
   "openclaw": {
@@ -31,7 +31,7 @@
     }
   },
   "dependencies": {
-    "clawdbot": "*",
+    "openclaw": "*",
     "fast-xml-parser": "^4.3.6"
   }
 }

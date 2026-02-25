@@ -5,7 +5,7 @@ import {
   buildPendingHistoryContextFromMap,
   recordPendingHistoryEntry,
   clearHistoryEntriesIfEnabled,
-} from "clawdbot/plugin-sdk";
+} from "openclaw/plugin-sdk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, unlink, mkdir, appendFile } from "node:fs/promises";
@@ -663,9 +663,9 @@ const WecomChannelPlugin = {
       return { ok: true, provider: "wecom" };
     },
   },
-  // 入站消息处理 - clawdbot 会调用这个方法
+  // 入站消息处理 - openclaw 会调用这个方法
   inbound: {
-    // 当消息需要回复时，clawdbot 会调用这个方法
+    // 当消息需要回复时，openclaw 会调用这个方法
     deliverReply: async ({ to, text, accountId, mediaUrl, mediaType, sessionKey }) => {
       // 从 sessionKey 或 to 中提取 accountId
       // 支持多智能体格式: agent:<agentId>:wecom:<accountId>:...
@@ -1165,7 +1165,7 @@ async function handleHelpCommand({ api, fromUser, corpId, corpSecret, agentId })
 async function handleClearCommand({ api, fromUser, corpId, corpSecret, agentId, sessionId: passedSessionId }) {
   const sessionId = passedSessionId || `wecom:${fromUser.toLowerCase()}`;
   try {
-    await execFileAsync("clawdbot", ["session", "clear", "--session-id", sessionId], { timeout: 10000 });
+    await execFileAsync("openclaw", ["session", "clear", "--session-id", sessionId], { timeout: 10000 });
 
     // 同时清除内存中的会话历史
     clearHistoryEntriesIfEnabled({ historyMap: sessionHistories, historyKey: sessionId, limit: DEFAULT_HISTORY_LIMIT });
@@ -1260,7 +1260,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
   const runtime = api.runtime;
 
   if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
-    api.logger.warn?.("wecom: not configured (check channels.wecom in clawdbot.json)");
+    api.logger.warn?.("wecom: not configured (check channels.wecom in openclaw.json)");
     return;
   }
 
