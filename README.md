@@ -95,7 +95,7 @@ openclaw plugin install --path /path/to/openclaw-wechat
 1. 克隆本仓库：
 
 ```bash
-git clone https://github.com/Xueheng-Li/openclaw-wechat.git
+git clone https://github.com/datalingua-dev/openclaw-wechat.git
 cd openclaw-wechat
 npm install
 ```
@@ -190,48 +190,101 @@ npm install
 }
 ```
 
-#### 多智能体路由配置
+#### 多应用多智能体路由配置
 
-如果你希望不同的用户/群组被不同的 AI 智能体服务，可以配置 `agents` 和 `bindings`：
+如果你在同一个企业微信下创建了多个自建应用，希望每个应用由不同的 AI 智能体服务（如"销售助手"、"客服助手"各有独立话术），按以下步骤配置：
+
+**架构图：**
+
+```
+企业微信（CorpID: ww123）
+├── 自建应用「销售助手」  ──回调──▶  /wecom/sales    ──路由──▶  Agent: sales-bot
+├── 自建应用「客服助手」  ──回调──▶  /wecom/support  ──路由──▶  Agent: support-bot
+└── 自建应用「技术支持」  ──回调──▶  /wecom/tech     ──路由──▶  Agent: tech-bot
+```
+
+**完整配置示例（`~/.openclaw/openclaw.json`）：**
 
 ```json
 {
+  "channels": {
+    "wecom": {
+      "accounts": {
+        "sales": {
+          "corpId": "ww你的企业ID",
+          "corpSecret": "销售应用的Secret",
+          "agentId": 1000002,
+          "callbackToken": "销售应用的Token",
+          "callbackAesKey": "销售应用的AESKey"
+        },
+        "support": {
+          "corpId": "ww你的企业ID",
+          "corpSecret": "客服应用的Secret",
+          "agentId": 1000003,
+          "callbackToken": "客服应用的Token",
+          "callbackAesKey": "客服应用的AESKey"
+        },
+        "tech": {
+          "corpId": "ww你的企业ID",
+          "corpSecret": "技术支持应用的Secret",
+          "agentId": 1000004,
+          "callbackToken": "技术支持应用的Token",
+          "callbackAesKey": "技术支持应用的AESKey"
+        }
+      }
+    }
+  },
   "agents": {
     "list": [
       {
-        "id": "work",
-        "name": "Work Assistant",
-        "workspace": "~/.openclaw/workspace-work"
+        "id": "sales-bot",
+        "name": "销售助手",
+        "workspace": "~/.openclaw/workspace-sales"
       },
       {
-        "id": "personal",
+        "id": "support-bot",
+        "name": "客服助手",
+        "workspace": "~/.openclaw/workspace-support"
+      },
+      {
+        "id": "tech-bot",
         "default": true,
-        "name": "Personal Assistant",
-        "workspace": "~/.openclaw/workspace-personal"
+        "name": "技术支持",
+        "workspace": "~/.openclaw/workspace-tech"
       }
     ]
   },
   "bindings": [
-    {
-      "agentId": "work",
-      "match": {
-        "channel": "wecom",
-        "peer": { "kind": "dm", "id": "zhangsan" }
-      }
-    },
-    {
-      "agentId": "work",
-      "match": {
-        "channel": "wecom",
-        "peer": { "kind": "group", "id": "GROUP_CHAT_ID" }
-      }
-    },
-    {
-      "agentId": "personal",
-      "match": { "channel": "wecom" }
-    }
+    { "agentId": "sales-bot", "match": { "channel": "wecom", "accountId": "sales" } },
+    { "agentId": "support-bot", "match": { "channel": "wecom", "accountId": "support" } },
+    { "agentId": "tech-bot", "match": { "channel": "wecom", "accountId": "tech" } }
   ]
 }
+```
+
+> 💡 **每个 Agent 的话术/人设**：在各自的 `workspace` 目录下创建 `AGENTS.md` 或 `SOUL.md` 文件，定义该智能体的角色、话术风格和知识范围。
+
+**企业微信后台配置：**
+
+每个自建应用需要分别配置回调 URL：
+| 应用 | 回调 URL |
+|------|----------|
+| 销售助手 | `https://你的域名/wecom/sales` |
+| 客服助手 | `https://你的域名/wecom/support` |
+| 技术支持 | `https://你的域名/wecom/tech` |
+
+**按用户/群组精细路由（可选）：**
+
+在同一个应用内，还可以按用户或群组路由到不同智能体：
+
+```json
+{
+  "bindings": [
+    { "agentId": "vip-sales", "match": { "channel": "wecom", "accountId": "sales", "peer": { "kind": "dm", "id": "zhangsan" } } },
+    { "agentId": "sales-bot", "match": { "channel": "wecom", "accountId": "sales" } }
+  ]
+}
+```
 
 #### 第五步：配置公网访问 🔗
 

@@ -9,7 +9,23 @@
       "agentId": { "type": "number", "description": "企业微信 Agent ID" },
       "callbackToken": { "type": "string", "description": "回调 Token" },
       "callbackAesKey": { "type": "string", "description": "回调 AES Key" },
-      "webhookPath": { "type": "string", "description": "Webhook 路径", "default": "/wecom/callback" }
+      "webhookPath": { "type": "string", "description": "Webhook 路径", "default": "/wecom/callback" },
+      "accounts": {
+        "type": "object",
+        "description": "多应用配置（每个 key 为 accountId，value 为该应用的配置）",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "corpId": { "type": "string", "description": "企业微信 Corp ID" },
+            "corpSecret": { "type": "string", "description": "自建应用 Secret" },
+            "agentId": { "type": "number", "description": "自建应用 Agent ID" },
+            "callbackToken": { "type": "string", "description": "回调 Token" },
+            "callbackAesKey": { "type": "string", "description": "回调 AES Key" },
+            "webhookPath": { "type": "string", "description": "Webhook 路径（默认 /wecom/<accountId>）" }
+          },
+          "required": ["corpId", "corpSecret", "agentId", "callbackToken", "callbackAesKey"]
+        }
+      }
     }
   }
 }

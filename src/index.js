@@ -122,11 +122,12 @@ function asNumber(v, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// 企业微信 access_token 缓存（支持多账户）
-const accessTokenCaches = new Map(); // key: corpId, value: { token, expiresAt, refreshPromise }
+// 企业微信 access_token 缓存（支持多账户/多应用）
+// key: corpId:corpSecret — 同一企业下不同应用的 secret 不同，token 也不同，必须分开缓存
+const accessTokenCaches = new Map();
 
 async function getWecomAccessToken({ corpId, corpSecret }) {
-  const cacheKey = corpId;
+  const cacheKey = `${corpId}:${corpSecret}`;
   let cache = accessTokenCaches.get(cacheKey);
   if (!cache) {
     cache = { token: null, expiresAt: 0, refreshPromise: null };
@@ -1094,6 +1095,8 @@ export default function register(api) {
 
   // 为每个账户注册独立的 webhook 路由
   const accountIds = listWecomAccountIds(api);
+  api.logger.info?.(`wecom: discovered ${accountIds.length} account(s): [${accountIds.join(", ")}]`);
+
   for (const accountId of accountIds) {
     const accountConfig = getWecomConfig(api, accountId);
     if (!accountConfig) {
@@ -1109,7 +1112,11 @@ export default function register(api) {
       handler: createWebhookHandler(api, accountId),
     });
 
-    api.logger.info?.(`wecom: registered webhook at ${normalizedPath} for account "${accountId}"`);
+    api.logger.info?.(`wecom: registered webhook at ${normalizedPath} for account "${accountId}" (agentId=${accountConfig.agentId}, corpId=${accountConfig.corpId?.slice(0, 8)}...)`);
+  }
+
+  if (accountIds.length > 1) {
+    api.logger.info?.(`wecom: multi-app mode enabled — ${accountIds.length} applications configured, each with independent webhook and token cache`);
   }
 }
 
@@ -1175,7 +1182,7 @@ async function handleClearCommand({ api, fromUser, corpId, corpSecret, agentId, 
   return true;
 }
 
-async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId, sessionId, resolvedAgentId }) {
+async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId, sessionId, resolvedAgentId, accountId }) {
   const config = getWecomConfig(api);
   const accountIds = listWecomAccountIds(api);
 
@@ -1184,21 +1191,45 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
   const historyEntries = sessionHistories.get(historyKey) || [];
   const historyCount = historyEntries.length;
   const currentAgentId = resolvedAgentId || "main";
+  const currentAccountId = accountId || config?.accountId || "default";
 
   // 检测语音 STT 是否可用
   const sttPython = process.env.WECOM_STT_PYTHON || "python3";
   const sttAvailable = sttPython !== "python3" || existsSync("/usr/bin/python3");
 
+  // 构建已配置账户的路由映射信息
+  const cfg = api.config;
+  const runtime = api.runtime;
+  let routeInfo = "";
+  for (const aid of accountIds) {
+    const acctConfig = getWecomConfig(api, aid);
+    if (!acctConfig) continue;
+    const webhookPath = acctConfig.webhookPath || (aid === "default" ? "/wecom/callback" : `/wecom/${aid}`);
+    // 尝试获取该 accountId 路由到的 agentId
+    let routedAgentId = "main";
+    try {
+      const testRoute = runtime.channel.routing.resolveAgentRoute({
+        cfg,
+        sessionKey: `wecom:${aid}:test`,
+        channel: "wecom",
+        accountId: aid,
+      });
+      routedAgentId = testRoute.agentId || "main";
+    } catch (_) {}
+    routeInfo += `  ${aid} → ${webhookPath} → agent:${routedAgentId}\n`;
+  }
+
   const statusText = `📊 系统状态
 
 渠道：企业微信 (WeCom)
 会话ID：${historyKey}
-账户ID：${config?.accountId || "default"}
-智能体ID：${currentAgentId}
-已配置账户：${accountIds.join(", ")}
+当前账户：${currentAccountId}
+当前智能体：${currentAgentId}
 插件版本：${PLUGIN_VERSION}
 对话历史：${historyCount} 条（上限 ${DEFAULT_HISTORY_LIMIT} 条）
 
+📡 已配置的应用路由：
+${routeInfo}
 功能状态：
 ✅ 文本消息
 ✅ 图片发送/接收
@@ -1210,8 +1241,7 @@ ${sttAvailable ? "✅" : "⚠️"} 语音转文字 (STT)
 ✅ 命令系统
 ✅ Markdown 转换
 ✅ API 限流
-✅ 多账户支持
-✅ 多智能体路由`;
+✅ 多应用多智能体路由`;
 
   await sendWecomText({ corpId, corpSecret, agentId, toUser: fromUser, text: statusText });
   return true;
@@ -1269,98 +1299,117 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       const handler = COMMANDS[commandKey];
       if (handler) {
         api.logger.info?.(`wecom: handling command ${commandKey}`);
-        await handler({ api, fromUser, corpId, corpSecret, agentId, chatId, isGroupChat, sessionId, resolvedAgentId });
+        await handler({ api, fromUser, corpId, corpSecret, agentId, chatId, isGroupChat, sessionId, resolvedAgentId, accountId });
         return; // 命令已处理，不再调用 AI
       }
     }
 
     let messageText = content || "";
 
-    // 处理图片消息 - 真正的 Vision 能力
-    let imageBase64 = null;
-    let imageMimeType = null;
+    // 多模态媒体管线：下载媒体文件后通过 MediaPath 传给 OpenClaw 核心
+    // OpenClaw 核心会根据 tools.media.* 配置将媒体传给多模态 LLM
+    let mediaTempPath = null;
+    const mediaCleanupPaths = [];
 
+    // 处理图片消息 — 通过 OpenClaw 多模态管线传给 LLM
     if (msgType === "image" && mediaId) {
       api.logger.info?.(`wecom: downloading image mediaId=${mediaId}`);
 
       try {
-        // 优先使用 mediaId 下载原图
-        const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
-        imageBase64 = buffer.toString("base64");
-        imageMimeType = contentType || "image/jpeg";
-        messageText = "[用户发送了一张图片]";
-        api.logger.info?.(`wecom: image downloaded, size=${buffer.length} bytes, type=${imageMimeType}`);
-      } catch (downloadErr) {
-        api.logger.warn?.(`wecom: failed to download image via mediaId: ${downloadErr.message}`);
+        let imageBuffer = null;
+        let imageContentType = null;
 
-        // 降级：尝试通过 PicUrl 下载
-        if (picUrl) {
-          try {
-            const { buffer, contentType } = await fetchMediaFromUrl(picUrl);
-            imageBase64 = buffer.toString("base64");
-            imageMimeType = contentType || "image/jpeg";
-            messageText = "[用户发送了一张图片]";
-            api.logger.info?.(`wecom: image downloaded via PicUrl, size=${buffer.length} bytes`);
-          } catch (picUrlErr) {
-            api.logger.warn?.(`wecom: failed to download image via PicUrl: ${picUrlErr.message}`);
-            messageText = "[用户发送了一张图片，但下载失败]\n\n请告诉用户图片处理暂时不可用。";
+        // 优先使用 mediaId 下载原图
+        try {
+          const result = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+          imageBuffer = result.buffer;
+          imageContentType = result.contentType || "image/jpeg";
+        } catch (mediaErr) {
+          api.logger.warn?.(`wecom: failed to download image via mediaId: ${mediaErr.message}`);
+          // 降级：尝试通过 PicUrl 下载
+          if (picUrl) {
+            const result = await fetchMediaFromUrl(picUrl);
+            imageBuffer = result.buffer;
+            imageContentType = result.contentType || "image/jpeg";
           }
+        }
+
+        if (imageBuffer) {
+          const ext = imageContentType?.includes("png") ? "png" : imageContentType?.includes("gif") ? "gif" : "jpg";
+          const tempDir = join(tmpdir(), "openclaw-wecom");
+          await mkdir(tempDir, { recursive: true });
+          mediaTempPath = join(tempDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+          await writeFile(mediaTempPath, imageBuffer);
+          mediaCleanupPaths.push(mediaTempPath);
+          messageText = "[用户发送了一张图片]";
+          api.logger.info?.(`wecom: image saved to ${mediaTempPath}, size=${imageBuffer.length} bytes, type=${imageContentType}`);
         } else {
           messageText = "[用户发送了一张图片，但下载失败]\n\n请告诉用户图片处理暂时不可用。";
         }
+      } catch (downloadErr) {
+        api.logger.warn?.(`wecom: failed to process image: ${downloadErr.message}`);
+        messageText = "[用户发送了一张图片，但下载失败]\n\n请告诉用户图片处理暂时不可用。";
       }
     }
 
-    // 处理语音消息 - 下载 AMR 并用 faster-whisper 转写
+    // 处理语音消息 — 下载并通过 OpenClaw 多模态管线传给 LLM
+    // 同时保留本地 FunASR STT 作为降级方案
     if (msgType === "voice" && mediaId) {
       api.logger.info?.(`wecom: received voice message mediaId=${mediaId}`);
 
-      // 优先使用企业微信自带的语音识别结果（如果有）
+      // 始终下载语音文件，供 OpenClaw 多模态管线使用
+      let voiceAmrPath = null;
+      let voiceWavPath = null;
+      try {
+        const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+        const tempDir = join(tmpdir(), "openclaw-wecom");
+        await mkdir(tempDir, { recursive: true });
+        const ts = Date.now();
+        voiceAmrPath = join(tempDir, `voice-${ts}.amr`);
+        voiceWavPath = join(tempDir, `voice-${ts}.wav`);
+        await writeFile(voiceAmrPath, buffer);
+        api.logger.info?.(`wecom: saved voice to ${voiceAmrPath}, size=${buffer.length} bytes`);
+
+        // AMR -> WAV (16kHz mono)
+        await execFileAsync("ffmpeg", ["-y", "-i", voiceAmrPath, "-ar", "16000", "-ac", "1", voiceWavPath], { timeout: 10000 });
+        api.logger.info?.(`wecom: converted voice to WAV`);
+
+        // 设置 mediaTempPath，让 OpenClaw 核心处理音频
+        mediaTempPath = voiceWavPath;
+        mediaCleanupPaths.push(voiceAmrPath, voiceWavPath);
+      } catch (downloadErr) {
+        api.logger.warn?.(`wecom: failed to download/convert voice: ${downloadErr.message}`);
+        // 下载失败时清理已有的临时文件
+        if (voiceAmrPath) unlink(voiceAmrPath).catch(() => {});
+      }
+
+      // 获取文本内容（作为 caption / 降级方案）
       if (recognition) {
         api.logger.info?.(`wecom: voice recognition result: ${recognition.slice(0, 50)}...`);
         messageText = `[语音消息] ${recognition}`;
-      } else {
-        // 下载语音文件并用本地 Whisper 转写
-        let voiceAmrPath = null;
-        let voiceWavPath = null;
+      } else if (voiceWavPath && existsSync(voiceWavPath)) {
+        // 尝试本地 FunASR STT 作为降级
         try {
-          const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
-          const tempDir = join(tmpdir(), "openclaw-wecom");
-          await mkdir(tempDir, { recursive: true });
-          const ts = Date.now();
-          voiceAmrPath = join(tempDir, `voice-${ts}.amr`);
-          voiceWavPath = join(tempDir, `voice-${ts}.wav`);
-          await writeFile(voiceAmrPath, buffer);
-          api.logger.info?.(`wecom: saved voice to ${voiceAmrPath}, size=${buffer.length} bytes`);
-
-          // AMR -> WAV (16kHz mono, optimal for Whisper)
-          await execFileAsync("ffmpeg", ["-y", "-i", voiceAmrPath, "-ar", "16000", "-ac", "1", voiceWavPath], { timeout: 10000 });
-          api.logger.info?.(`wecom: converted voice to WAV`);
-
-          // Whisper STT
           const sttScriptPath = join(dirname(new URL(import.meta.url).pathname), "..", "stt.py");
           const _sttPython = process.env.WECOM_STT_PYTHON || "python3";
           const { stdout } = await execFileAsync(_sttPython, [sttScriptPath, voiceWavPath], { timeout: 30000 });
           const transcription = stdout.trim();
-          api.logger.info?.(`wecom: transcribed voice: ${transcription.slice(0, 80)}`);
-
           if (transcription) {
+            api.logger.info?.(`wecom: local STT transcribed: ${transcription.slice(0, 80)}`);
             messageText = `[语音消息] ${transcription}`;
           } else {
-            messageText = "[用户发送了一条语音消息，但语音识别结果为空]\n\n请告诉用户没有识别到语音内容，建议重新发送或使用文字消息。";
+            messageText = "[用户发送了一条语音消息]";
           }
         } catch (sttErr) {
-          api.logger.error?.(`wecom: voice STT failed: ${sttErr.message}`);
-          messageText = "[用户发送了一条语音消息，但语音识别失败]\n\n请告诉用户语音识别暂时出现问题，建议发送文字消息。";
-        } finally {
-          // 清理临时文件
-          if (voiceAmrPath) unlink(voiceAmrPath).catch(() => {});
-          if (voiceWavPath) unlink(voiceWavPath).catch(() => {});
+          api.logger.warn?.(`wecom: local STT failed (will rely on OpenClaw media pipeline): ${sttErr.message}`);
+          messageText = "[用户发送了一条语音消息]";
         }
+      } else {
+        messageText = "[用户发送了一条语音消息，但下载失败]\n\n请告诉用户语音消息处理暂时不可用。";
       }
     }
 
-    // 处理视频消息
+    // 处理视频消息 — 通过 OpenClaw 多模态管线传给 LLM
     if (msgType === "video" && mediaId) {
       api.logger.info?.(`wecom: received video message mediaId=${mediaId}`);
 
@@ -1370,15 +1419,17 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         await mkdir(tempDir, { recursive: true });
         const videoTempPath = join(tempDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
         await writeFile(videoTempPath, buffer);
-        api.logger.info?.(`wecom: saved video to ${videoTempPath}, size=${buffer.length} bytes`);
-        messageText = `[用户发送了一个视频文件，已保存到：${videoTempPath}]\n\n请告知用户您已收到视频。`;
+        mediaTempPath = videoTempPath;
+        mediaCleanupPaths.push(videoTempPath);
+        messageText = "[用户发送了一个视频]";
+        api.logger.info?.(`wecom: video saved to ${videoTempPath}, size=${buffer.length} bytes`);
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download video: ${downloadErr.message}`);
         messageText = "[用户发送了一个视频，但下载失败]\n\n请告诉用户视频处理暂时不可用。";
       }
     }
 
-    // 处理文件消息
+    // 处理文件消息 — 通过 OpenClaw 多模态管线传给 LLM
     if (msgType === "file" && mediaId) {
       api.logger.info?.(`wecom: received file message mediaId=${mediaId}, fileName=${fileName}, size=${fileSize}`);
 
@@ -1392,39 +1443,28 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         await writeFile(fileTempPath, buffer);
         api.logger.info?.(`wecom: saved file to ${fileTempPath}, size=${buffer.length} bytes`);
 
-        // 自动读取文档内容（支持 PDF, Word, Excel, HTML, YAML 等）
-        const autoReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.html', '.htm', '.yaml', '.yml'];
-        const isAutoRead = autoReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
-        let fileContent = null;
+        // 设置 mediaTempPath，让 OpenClaw 核心处理文件
+        mediaTempPath = fileTempPath;
+        mediaCleanupPaths.push(fileTempPath);
 
-        if (isAutoRead) {
+        // 对于文本类文件，同时提取内容作为上下文
+        const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
+        const isTextFile = textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
+
+        if (isTextFile) {
           try {
-            // 使用文档处理器读取内容
-            const { execFile } = await import('node:child_process');
-            const { promisify } = await import('node:util');
-            const execFileAsync = promisify(execFile);
-            const docProcessor = '/home/oldbird/.openclaw/workspace/skills/doc-processor/doc_processor.py';
-            const { stdout } = await execFileAsync('python3', [docProcessor, fileTempPath], { timeout: 30000 });
-            fileContent = stdout.trim();
-            api.logger.info?.(`wecom: auto-read file content, length=${fileContent.length}`);
-          } catch (readErr) {
-            api.logger.warn?.(`wecom: failed to auto-read file: ${readErr.message}`);
+            const textContent = await readFile(fileTempPath, 'utf8');
+            const preview = textContent.length > 3000 ? textContent.slice(0, 3000) + '\n\n...(内容已截断)' : textContent;
+            messageText = `[用户发送了文件：${safeFileName}]\n\n${preview}`;
+          } catch (_) {
+            messageText = `[用户发送了文件：${safeFileName}]`;
           }
-        }
-
-        if (isAutoRead && fileContent) {
-          // 自动读取成功，直接告诉 AI 文件内容
-          const preview = fileContent.length > 3000 ? fileContent.slice(0, 3000) + '\n\n...(内容过长，已截断，请使用 Read 工具查看完整文件：' + fileTempPath + ')' : fileContent;
-          messageText = `[用户发送了一个文件：${safeFileName}]\n\n文件内容如下：\n${preview}\n\n请根据文件内容回复用户。`;
-        } else if (isAutoRead) {
-          // 自动读取失败，告知路径让用户重试
-          messageText = `[用户发送了一个文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件读取失败，请告知用户并建议重新发送。`;
         } else {
-          messageText = `[用户发送了一个文件：${safeFileName}，大小：${fileSize || buffer.length} 字节，已保存到：${fileTempPath}]\n\n请告知用户您已收到文件。`;
+          messageText = `[用户发送了文件：${safeFileName}，大小：${fileSize || buffer.length} 字节]`;
         }
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download file: ${downloadErr.message}`);
-        messageText = `[用户发送了一个文件${fileName ? `: ${fileName}` : ''}，但下载失败]\n\n请告诉用户文件处理暂时不可用。`;
+        messageText = `[用户发送了一个文件${fileName ? `：${fileName}` : ''}，但下载失败]\n\n请告诉用户文件处理暂时不可用。`;
       }
     }
 
@@ -1439,24 +1479,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       return;
     }
 
-    // 如果有图片，保存到临时文件供 AI 读取
-    let imageTempPath = null;
-    if (imageBase64 && imageMimeType) {
-      try {
-        const ext = imageMimeType.includes("png") ? "png" : imageMimeType.includes("gif") ? "gif" : "jpg";
-        const tempDir = join(tmpdir(), "openclaw-wecom");
-        await mkdir(tempDir, { recursive: true });
-        imageTempPath = join(tempDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
-        await writeFile(imageTempPath, Buffer.from(imageBase64, "base64"));
-        api.logger.info?.(`wecom: saved image to ${imageTempPath}`);
-
-        // 更新消息文本，告知 AI 图片位置
-        messageText = `[用户发送了一张图片，已保存到：${imageTempPath}]\n\n请使用 Read 工具查看这张图片并描述内容。`;
-      } catch (saveErr) {
-        api.logger.warn?.(`wecom: failed to save image: ${saveErr.message}`);
-        messageText = "[用户发送了一张图片，但保存失败]\n\n请告诉用户图片处理暂时不可用。";
-        imageTempPath = null;
-      }
+    // 日志：多模态媒体管线状态
+    if (mediaTempPath) {
+      api.logger.info?.(`wecom: media file ready for OpenClaw pipeline: ${mediaTempPath}`);
     }
 
     // route 已在函数入口通过 peer 信息获取（见上方 resolveAgentRoute 调用）
@@ -1529,6 +1554,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       Timestamp: Date.now(),
       OriginatingChannel: "wecom",
       OriginatingTo: `wecom:${fromUser}`,
+      // 多模态媒体管线：将媒体文件路径传给 OpenClaw 核心
+      // OpenClaw 核心会根据 tools.media.* 配置自动处理（图片/音频/视频）
+      ...(mediaTempPath ? { MediaPath: mediaTempPath, MediaUrl: `file://${mediaTempPath}` } : {}),
     };
 
     // 注册会话到 Sessions UI
@@ -1614,9 +1642,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         },
       });
     } finally {
-      // 清理临时图片文件
-      if (imageTempPath) {
-        unlink(imageTempPath).catch(() => {});
+      // 清理临时媒体文件（dispatcher 已完成处理，文件可以安全删除）
+      for (const cleanupPath of mediaCleanupPaths) {
+        unlink(cleanupPath).catch(() => {});
       }
     }
   } catch (err) {

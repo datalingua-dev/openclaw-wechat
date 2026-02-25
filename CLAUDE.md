@@ -115,3 +115,10 @@ Plugin manifest: `openclaw.plugin.json` (plugin ID: `wecom`)
 - Outbound `sendText`/`sendMedia`/`deliverReply` regex handles both `agent:<agentId>:wecom:<accountId>:...` and legacy `wecom:<accountId>:...` formats
 - In-memory history is keyed by agentId-inclusive session key, ensuring per-agent isolation
 - `/status` displays current `agentId`, `/clear` uses routed session key
+
+### Multi-App Multi-Agent (v0.4.1)
+- **核心场景**：同一企业微信（同一 CorpID）下多个自建应用，各对应不同 OpenClaw Agent
+- **配置方式**：`channels.wecom.accounts` 配置多应用，`bindings` 按 `accountId` 映射到 `agentId`
+- **Token 隔离**：access_token 缓存 key 为 `corpId:corpSecret`，同企业多应用不会互相覆盖
+- **Webhook 隔离**：每个应用独立 webhook 路径（默认 `/wecom/<accountId>`），企业微信后台需分别配置
+- **会话隔离**：session key 包含 agentId 和 accountId，不同应用的会话完全独立

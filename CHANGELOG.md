@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-02-25
+
+### Fixed
+
+#### 多应用 access_token 缓存 Bug
+- **修复同企业多应用 token 互相覆盖**：`getWecomAccessToken()` 缓存 key 从 `corpId` 改为 `corpId:corpSecret`，同一企业下不同自建应用（各有独立 Secret）的 access_token 现在正确隔离
+
+### Added
+
+#### 多应用多智能体路由增强
+- **`openclaw.plugin.json` 多应用 schema**：新增 `accounts` 子对象定义，OpenClaw 核心能正确识别多应用配置结构
+- **`/status` 命令增强**：显示所有已配置应用的路由映射（accountId → webhook → agentId）
+- **启动日志增强**：显示已发现的账户数量和每个应用的 webhook/agentId/corpId 信息；多应用模式时输出提示
+
+#### 多模态媒体管线 (Media Pipeline)
+- **图片**：下载后通过 `ctxPayload.MediaPath` 传给 OpenClaw 核心，由多模态 LLM（如 Qwen 3.5）直接理解图片内容
+- **语音**：始终下载并转换为 WAV，通过 MediaPath 传给 OpenClaw 核心；保留本地 FunASR STT 作为降级方案
+- **视频**：下载后通过 MediaPath 传给 OpenClaw 核心处理
+- **文件**：非文本类文件通过 MediaPath 传给 OpenClaw 核心；文本类文件同时提取内容作为上下文
+- 移除硬编码的 `doc_processor.py` 路径依赖
+
+### Changed
+- README 多智能体路由章节重写，新增完整的「多应用多 Agent」配置指南和架构图
+- 媒体处理走 OpenClaw MediaPath 多模态管线，不再依赖工具调用读取文件
+- 插件版本升级至 0.4.1
+
 ## [0.4.0] - 2026-02-25
 
 ### Added
