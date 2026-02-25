@@ -1446,18 +1446,44 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         mediaTempPath = fileTempPath;
         mediaCleanupPaths.push(fileTempPath);
 
-        // 对于文本类文件，同时提取内容作为上下文
-        const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
-        const isTextFile = textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
+        // 自动读取文档内容（支持 PDF, Word, Excel, HTML, YAML 等）
+        const autoReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.html', '.htm', '.yaml', '.yml'];
+        const isAutoRead = autoReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
+        let fileContent = null;
 
-        if (isTextFile) {
+        if (isAutoRead) {
           try {
-            const textContent = await readFile(fileTempPath, 'utf8');
-            const preview = textContent.length > 3000 ? textContent.slice(0, 3000) + `\n\n...（内容已截断，完整文件：${fileTempPath}）` : textContent;
-            messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件内容如下：\n${preview}`;
-          } catch (_) {
-            messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n请使用 Read 工具查看文件内容。`;
+            // 尝试使用文档处理器读取内容 (PDF/Word/Excel等)
+            const docProcessor = process.env.WECOM_DOC_PROCESSOR || '/home/oldbird/.openclaw/workspace/skills/doc-processor/doc_processor.py';
+            if (existsSync(docProcessor)) {
+              try {
+                const { stdout } = await execFileAsync('python3', [docProcessor, fileTempPath], { timeout: 30000 });
+                fileContent = stdout.trim();
+                if (fileContent) {
+                  api.logger.info?.(`wecom: auto-read file content using doc_processor, length=${fileContent.length}`);
+                }
+              } catch (pyErr) {
+                api.logger.warn?.(`wecom: doc_processor.py failed: ${pyErr.message}`);
+              }
+            }
+            
+            // 如果 python 解析失败且是文本文件，降级使用原生 readFile
+            if (!fileContent) {
+              const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
+              if (textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t))) {
+                fileContent = await readFile(fileTempPath, 'utf8');
+              }
+            }
+          } catch (readErr) {
+            api.logger.warn?.(`wecom: failed to read file content: ${readErr.message}`);
           }
+        }
+
+        if (fileContent) {
+          const preview = fileContent.length > 3000 ? fileContent.slice(0, 3000) + `\n\n...（内容已截断，完整文件：${fileTempPath}）` : fileContent;
+          messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件内容如下：\n${preview}`;
+        } else if (isAutoRead) {
+          messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件自动读取失败，请使用 Read 工具查看文件内容。`;
         } else {
           messageText = `[用户发送了文件：${safeFileName}，大小：${fileSize || buffer.length} 字节，已保存到：${fileTempPath}]\n\n请使用 Read 工具查看文件内容。`;
         }
