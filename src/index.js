@@ -1352,60 +1352,85 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       }
     }
 
-    // 处理语音消息 — 下载并通过 OpenClaw 多模态管线传给 LLM
-    // 同时保留本地 FunASR STT 作为降级方案
+    // 处理语音消息 — 通过百炼原生API转写，不再依赖本地FFmpeg和STT
     if (msgType === "voice" && mediaId) {
       api.logger.info?.(`wecom: received voice message mediaId=${mediaId}`);
-
-      // 始终下载语音文件，供 OpenClaw 多模态管线使用
       let voiceAmrPath = null;
-      let voiceWavPath = null;
       try {
         const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
         const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw"), "media", "wecom");
         await mkdir(mediaDir, { recursive: true });
         const ts = Date.now();
         voiceAmrPath = join(mediaDir, `voice-${ts}.amr`);
-        voiceWavPath = join(mediaDir, `voice-${ts}.wav`);
         await writeFile(voiceAmrPath, buffer);
         api.logger.info?.(`wecom: saved voice to ${voiceAmrPath}, size=${buffer.length} bytes`);
+        mediaCleanupPaths.push(voiceAmrPath);
 
-        // AMR -> WAV (16kHz mono)
-        await execFileAsync("ffmpeg", ["-y", "-i", voiceAmrPath, "-ar", "16000", "-ac", "1", voiceWavPath], { timeout: 10000 });
-        api.logger.info?.(`wecom: converted voice to WAV`);
-
-        // 设置 mediaTempPath，让 OpenClaw 核心处理音频
-        mediaTempPath = voiceWavPath;
-        mediaCleanupPaths.push(voiceAmrPath, voiceWavPath);
-      } catch (downloadErr) {
-        api.logger.warn?.(`wecom: failed to download/convert voice: ${downloadErr.message}`);
-        // 下载失败时清理已有的临时文件
-        if (voiceAmrPath) unlink(voiceAmrPath).catch(() => {});
-      }
-
-      // 获取文本内容（作为 caption / 降级方案）
-      if (recognition) {
-        api.logger.info?.(`wecom: voice recognition result: ${recognition.slice(0, 50)}...`);
-        messageText = `[语音消息] ${recognition}`;
-      } else if (voiceWavPath && existsSync(voiceWavPath)) {
-        // 尝试本地 FunASR STT 作为降级
-        try {
-          const sttScriptPath = join(dirname(new URL(import.meta.url).pathname), "..", "stt.py");
-          const _sttPython = process.env.WECOM_STT_PYTHON || "python3";
-          const { stdout } = await execFileAsync(_sttPython, [sttScriptPath, voiceWavPath], { timeout: 30000 });
-          const transcription = stdout.trim();
-          if (transcription) {
-            api.logger.info?.(`wecom: local STT transcribed: ${transcription.slice(0, 80)}`);
-            messageText = `[语音消息] ${transcription}`;
-          } else {
-            messageText = "[用户发送了一条语音消息]";
-          }
-        } catch (sttErr) {
-          api.logger.warn?.(`wecom: local STT failed (will rely on OpenClaw media pipeline): ${sttErr.message}`);
-          messageText = "[用户发送了一条语音消息]";
+        // 获取微信自带转写（如果有的话），优先作为 caption
+        if (recognition) {
+          api.logger.info?.(`wecom: voice recognition result from wecom: ${recognition.slice(0, 50)}...`);
+          messageText = `[语音消息] ${recognition}`;
         }
-      } else {
-        messageText = "[用户发送了一条语音消息，但下载失败]\n\n请告诉用户语音消息处理暂时不可用。";
+
+        // 尝试用百炼原生能力转写
+        const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
+        if (!messageText && bailianApiKey) {
+          try {
+            const formData = new FormData();
+            formData.append('file', new Blob([buffer]), `voice-${ts}.amr`);
+            formData.append('purpose', 'file-extract');
+            const upRes = await fetch("https://dashscope.aliyuncs.com/compatible-mode/v1/files", {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${bailianApiKey}` },
+              body: formData
+            });
+            if (upRes.ok) {
+              const fileData = await upRes.json();
+              if (fileData.id) {
+                api.logger.info?.(`wecom: uploaded voice to bailian, fileId=${fileData.id}`);
+                const chatRes = await fetch("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${bailianApiKey}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    model: "qwen-audio-turbo",
+                    messages: [{
+                      role: "system",
+                      content: "你是一个语音转写助手，请将用户提供的音频准确地转写为文本，不要输出额外的内容。"
+                    },{
+                      role: "user",
+                      content: [
+                        { type: "audio", audio_url: { url: `fileid://${fileData.id}` } },
+                        { type: "text", text: "转写音频" }
+                      ]
+                    }]
+                  })
+                });
+                if (chatRes.ok) {
+                  const chatData = await chatRes.json();
+                  const transcript = chatData.choices?.[0]?.message?.content?.trim();
+                  if (transcript) {
+                    messageText = `[语音消息] ${transcript}`;
+                    api.logger.info?.(`wecom: bailian STT transcribed: ${transcript.slice(0, 50)}`);
+                  }
+                } else {
+                  api.logger.warn?.(`wecom: bailian chat STT failed: ${chatRes.status} ${await chatRes.text()}`);
+                }
+              }
+            } else {
+              api.logger.warn?.(`wecom: bailian file upload failed: ${upRes.status} ${await upRes.text()}`);
+            }
+          } catch (sttErr) {
+            api.logger.warn?.(`wecom: bailian cloud STT error: ${sttErr.message}`);
+          }
+        }
+        
+        if (!messageText) {
+          messageText = `[用户发送了一条语音，已保存到：${voiceAmrPath}]\n\n由于云端转写提取失败，暂时无法阅读具体语音内容。`;
+        }
+        mediaTempPath = voiceAmrPath;
+      } catch (downloadErr) {
+        api.logger.warn?.(`wecom: failed to download voice: ${downloadErr.message}`);
+        messageText = "[用户发送了一条语音消息，但下载失败]";
       }
     }
 
@@ -1446,44 +1471,55 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         mediaTempPath = fileTempPath;
         mediaCleanupPaths.push(fileTempPath);
 
-        // 自动读取文档内容（支持 PDF, Word, Excel, HTML, YAML 等）
-        const autoReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.html', '.htm', '.yaml', '.yml'];
+        // 自动云端提取文档内容 (PDF, Word, Excel 等用百炼接口，纯文本本地直读)
+        const autoReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.ppt', '.pptx', '.html', '.htm', '.yaml', '.yml'];
         const isAutoRead = autoReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
         let fileContent = null;
+        let fileId = null;
 
         if (isAutoRead) {
+          const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
+          const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
+          const isTextFile = textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
+
           try {
-            // 尝试使用文档处理器读取内容 (PDF/Word/Excel等)
-            const docProcessor = process.env.WECOM_DOC_PROCESSOR || '/home/oldbird/.openclaw/workspace/skills/doc-processor/doc_processor.py';
-            if (existsSync(docProcessor)) {
-              try {
-                const { stdout } = await execFileAsync('python3', [docProcessor, fileTempPath], { timeout: 30000 });
-                fileContent = stdout.trim();
-                if (fileContent) {
-                  api.logger.info?.(`wecom: auto-read file content using doc_processor, length=${fileContent.length}`);
+            // 云端原生解析: 针对非普通文本文件，直接传给百炼拿 fileid
+            if (bailianApiKey && !isTextFile) {
+              const formData = new FormData();
+              formData.append('file', new Blob([buffer]), safeFileName);
+              formData.append('purpose', 'file-extract');
+              const upRes = await fetch("https://dashscope.aliyuncs.com/compatible-mode/v1/files", {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${bailianApiKey}` },
+                body: formData
+              });
+              if (upRes.ok) {
+                const fileData = await upRes.json();
+                if (fileData.id) {
+                  fileId = fileData.id;
+                  api.logger.info?.(`wecom: uploaded document to bailian, fileId=${fileId}`);
                 }
-              } catch (pyErr) {
-                api.logger.warn?.(`wecom: doc_processor.py failed: ${pyErr.message}`);
+              } else {
+                api.logger.warn?.(`wecom: bailian doc upload failed: ${upRes.status} ${await upRes.text()}`);
               }
             }
             
-            // 如果 python 解析失败且是文本文件，降级使用原生 readFile
-            if (!fileContent) {
-              const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
-              if (textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t))) {
-                fileContent = await readFile(fileTempPath, 'utf8');
-              }
+            // 降级原生地读取文本
+            if (!fileId && isTextFile) {
+              fileContent = await readFile(fileTempPath, 'utf8');
             }
           } catch (readErr) {
-            api.logger.warn?.(`wecom: failed to read file content: ${readErr.message}`);
+            api.logger.warn?.(`wecom: failed to process file content: ${readErr.message}`);
           }
         }
 
-        if (fileContent) {
+        if (fileId) {
+          messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n该文件已通过百炼API上传提取，你需要直接在消息或上下文中引用此 fileid 指令来阅读文档：fileid://${fileId}`;
+        } else if (fileContent) {
           const preview = fileContent.length > 3000 ? fileContent.slice(0, 3000) + `\n\n...（内容已截断，完整文件：${fileTempPath}）` : fileContent;
           messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件内容如下：\n${preview}`;
         } else if (isAutoRead) {
-          messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件自动读取失败，请使用 Read 工具查看文件内容。`;
+          messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件自动云端解析失败，请使用 Read 工具查看文件内容。`;
         } else {
           messageText = `[用户发送了文件：${safeFileName}，大小：${fileSize || buffer.length} 字节，已保存到：${fileTempPath}]\n\n请使用 Read 工具查看文件内容。`;
         }

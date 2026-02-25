@@ -160,11 +160,15 @@ npm install
       "WECOM_CALLBACK_TOKEN": "你设置的Token",
       "WECOM_CALLBACK_AES_KEY": "你生成的EncodingAESKey",
       "WECOM_WEBHOOK_PATH": "/wecom/callback",
-      "WECOM_PROXY": ""
+      "WECOM_PROXY": "",
+      "BAILIAN_API_KEY": "你的阿里云百炼 API Key（可选，用于文件提取和语音识别）",
+      "DASHSCOPE_API_KEY": "或者使用 DASHSCOPE_API_KEY（可选）"
     }
   }
 }
 ```
+
+> 💡 **百炼原生多模态支持**：如果你配置了 `BAILIAN_API_KEY`（或 `DASHSCOPE_API_KEY`），插件会自动将用户发送的语音（`.amr`）和各种文档（`.pdf`, `.docx`, `.xlsx` 等）上传到阿里云百炼，并通过原生模型直接解析和转写。实现了完全零本地依赖的多模态体验！
 
 ##### 多账户配置
 
