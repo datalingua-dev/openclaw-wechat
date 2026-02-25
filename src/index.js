@@ -1420,8 +1420,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         const videoTempPath = join(mediaDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
         await writeFile(videoTempPath, buffer);
         mediaTempPath = videoTempPath;
-        mediaCleanupPaths.push(videoTempPath);
-        messageText = "[用户发送了一个视频]";
+        messageText = `[用户发送了一个视频，已保存到：${videoTempPath}]\n\n请使用 Read 工具查看视频文件，或告知用户您已收到视频。`;
         api.logger.info?.(`wecom: video saved to ${videoTempPath}, size=${buffer.length} bytes`);
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download video: ${downloadErr.message}`);
@@ -1454,13 +1453,13 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         if (isTextFile) {
           try {
             const textContent = await readFile(fileTempPath, 'utf8');
-            const preview = textContent.length > 3000 ? textContent.slice(0, 3000) + '\n\n...(内容已截断)' : textContent;
-            messageText = `[用户发送了文件：${safeFileName}]\n\n${preview}`;
+            const preview = textContent.length > 3000 ? textContent.slice(0, 3000) + `\n\n...（内容已截断，完整文件：${fileTempPath}）` : textContent;
+            messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n文件内容如下：\n${preview}`;
           } catch (_) {
-            messageText = `[用户发送了文件：${safeFileName}]`;
+            messageText = `[用户发送了文件：${safeFileName}，已保存到：${fileTempPath}]\n\n请使用 Read 工具查看文件内容。`;
           }
         } else {
-          messageText = `[用户发送了文件：${safeFileName}，大小：${fileSize || buffer.length} 字节]`;
+          messageText = `[用户发送了文件：${safeFileName}，大小：${fileSize || buffer.length} 字节，已保存到：${fileTempPath}]\n\n请使用 Read 工具查看文件内容。`;
         }
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download file: ${downloadErr.message}`);
@@ -1642,9 +1641,11 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         },
       });
     } finally {
-      // 清理临时媒体文件（dispatcher 已完成处理，文件可以安全删除）
+      // 清理语音 AMR 源文件（WAV 和其他媒体文件保留，供 AI 后续对话引用）
       for (const cleanupPath of mediaCleanupPaths) {
-        unlink(cleanupPath).catch(() => {});
+        if (cleanupPath.endsWith('.amr')) {
+          unlink(cleanupPath).catch(() => {});
+        }
       }
     }
   } catch (err) {
