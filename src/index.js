@@ -1336,9 +1336,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
 
         if (imageBuffer) {
           const ext = imageContentType?.includes("png") ? "png" : imageContentType?.includes("gif") ? "gif" : "jpg";
-          const tempDir = join(tmpdir(), "openclaw-wecom");
-          await mkdir(tempDir, { recursive: true });
-          mediaTempPath = join(tempDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+          const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw"), "media", "wecom");
+          await mkdir(mediaDir, { recursive: true });
+          mediaTempPath = join(mediaDir, `image-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
           await writeFile(mediaTempPath, imageBuffer);
           mediaCleanupPaths.push(mediaTempPath);
           messageText = "[用户发送了一张图片]";
@@ -1362,11 +1362,11 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       let voiceWavPath = null;
       try {
         const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
-        const tempDir = join(tmpdir(), "openclaw-wecom");
-        await mkdir(tempDir, { recursive: true });
+        const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw"), "media", "wecom");
+        await mkdir(mediaDir, { recursive: true });
         const ts = Date.now();
-        voiceAmrPath = join(tempDir, `voice-${ts}.amr`);
-        voiceWavPath = join(tempDir, `voice-${ts}.wav`);
+        voiceAmrPath = join(mediaDir, `voice-${ts}.amr`);
+        voiceWavPath = join(mediaDir, `voice-${ts}.wav`);
         await writeFile(voiceAmrPath, buffer);
         api.logger.info?.(`wecom: saved voice to ${voiceAmrPath}, size=${buffer.length} bytes`);
 
@@ -1415,9 +1415,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
 
       try {
         const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
-        const tempDir = join(tmpdir(), "openclaw-wecom");
-        await mkdir(tempDir, { recursive: true });
-        const videoTempPath = join(tempDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
+        const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw"), "media", "wecom");
+        await mkdir(mediaDir, { recursive: true });
+        const videoTempPath = join(mediaDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
         await writeFile(videoTempPath, buffer);
         mediaTempPath = videoTempPath;
         mediaCleanupPaths.push(videoTempPath);
@@ -1437,9 +1437,9 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
         const ext = fileName ? fileName.split('.').pop() : 'bin';
         const safeFileName = fileName || `file-${Date.now()}.${ext}`;
-        const tempDir = join(tmpdir(), "openclaw-wecom");
-        await mkdir(tempDir, { recursive: true });
-        const fileTempPath = join(tempDir, `${Date.now()}-${safeFileName}`);
+        const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw"), "media", "wecom");
+        await mkdir(mediaDir, { recursive: true });
+        const fileTempPath = join(mediaDir, `${Date.now()}-${safeFileName}`);
         await writeFile(fileTempPath, buffer);
         api.logger.info?.(`wecom: saved file to ${fileTempPath}, size=${buffer.length} bytes`);
 
