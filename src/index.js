@@ -1374,13 +1374,16 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
 
         // 尝试用百炼原生能力转写
         const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
-        const bailianBaseUrl = (process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
+        // 文件上传必须用标准端点（coding子域名不支持 /files）
+        const bailianFilesUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1/files';
+        // 聊天补全可以用自定义端点
+        const bailianChatUrl = ((process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '')) + '/chat/completions';
         if (!messageText && bailianApiKey) {
           try {
             const formData = new FormData();
             formData.append('file', new Blob([buffer]), `voice-${ts}.amr`);
             formData.append('purpose', 'file-extract');
-            const upRes = await fetch(`${bailianBaseUrl}/files`, {
+            const upRes = await fetch(bailianFilesUrl, {
               method: 'POST',
               headers: { 'Authorization': `Bearer ${bailianApiKey}` },
               body: formData
@@ -1389,7 +1392,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
               const fileData = await upRes.json();
               if (fileData.id) {
                 api.logger.info?.(`wecom: uploaded voice to bailian, fileId=${fileData.id}`);
-                const chatRes = await fetch(`${bailianBaseUrl}/chat/completions`, {
+                const chatRes = await fetch(bailianChatUrl, {
                   method: 'POST',
                   headers: { 'Authorization': `Bearer ${bailianApiKey}`, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -1480,7 +1483,8 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
 
         if (isAutoRead) {
           const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
-          const bailianBaseUrl = (process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
+          // 文件上传必须用标准端点（coding子域名不支持 /files）
+          const bailianFilesUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1/files';
           const textReadTypes = ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yaml', '.yml'];
           const isTextFile = textReadTypes.some(t => safeFileName.toLowerCase().endsWith(t));
 
@@ -1490,7 +1494,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
               const formData = new FormData();
               formData.append('file', new Blob([buffer]), safeFileName);
               formData.append('purpose', 'file-extract');
-              const upRes = await fetch(`${bailianBaseUrl}/files`, {
+              const upRes = await fetch(bailianFilesUrl, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${bailianApiKey}` },
                 body: formData
