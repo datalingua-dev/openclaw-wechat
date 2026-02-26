@@ -25,7 +25,7 @@
 | ⚙️ 配置文件 | `~/.clawdbot/clawdbot.json` | `~/.openclaw/openclaw.json` |
 | 📨 消息类型 | 文本、图片、语音 | 文本、图片、语音、**视频**、**文件**、**链接** |
 | 📤 发送类型 | 仅文本 | 文本、**图片**、**视频**、**文件**（自动类型识别） |
-| 🎙️ 语音识别 | 仅企业微信自带 | 企业微信自带 + **本地 FunASR SenseVoice STT** |
+| 🎙️ 语音识别 | 仅企业微信自带 | 企业微信自带 + **百炼 qwen3-asr-flash 云端 ASR**（可选本地 FunASR） |
 | 🧠 对话历史 | 无 | **SDK 级对话记忆（与官方 Telegram 一致）** |
 | 🏠 多智能体 | 无 | **多智能体路由（peer/accountId/channel 绑定匹配）** |
 | 🖥️ Chat UI | 无 | **消息同步到 Transcript + 实时广播** |
@@ -44,9 +44,10 @@
 
 #### 🎬 媒体功能
 - [x] 🖼️ 图片消息收发 + AI Vision 识别
-- [x] 🎙️ 语音消息转文字（企业微信自带 + 本地 FunASR SenseVoice）
-- [x] 📹 视频消息接收、下载、发送
-- [x] 📎 文件消息接收（支持 .txt/.md/.json/.pdf 等自动读取）
+- [x] 🎙️ 语音消息转文字（企业微信自带 + **百炼 qwen3-asr-flash 云端 ASR**）
+- [x] 📹 视频消息接收、下载、发送 + **AI 视频内容理解（ffmpeg 截帧 + Qwen VL）**
+- [ ] 📎 文件消息接收（⚠️ **企业微信官方接口暂不支持普通用户向应用发送文件消息**，代码内已预置本地提取逻辑备用）
+- [x] 📍 位置消息接收（经纬度 + 位置名称）
 - [x] 🔗 链接分享消息接收
 
 #### 🎨 用户体验
@@ -70,8 +71,8 @@
 |:----:|:----:|:----:|------|
 | 📝 文本 | ✅ | ✅ | 完全支持，超长消息自动按字节分段 |
 | 🖼️ 图片 | ✅ | ✅ | 支持 AI Vision 识别，下载后保存到临时文件 |
-| 🎙️ 语音 | ✅ | ❌ | 企业微信自带识别 + 本地 FunASR SenseVoice STT（AMR→WAV→文本） |
-| 📹 视频 | ✅ | ✅ | 自动下载保存，支持发送视频消息 |
+| 🎙️ 语音 | ✅ | ❌ | 企业微信自带识别 + 百炼 qwen3-asr-flash 云端 ASR（AMR → base64 → 文本） |
+| 📹 视频 | ✅ | ✅ | 自动下载 → ffmpeg 截帧 → Qwen VL 理解视频内容，支持发送视频消息 |
 | 📎 文件 | ✅ | ✅ | 自动下载，可读类型自动交给 AI 分析 |
 
 ### 📦 前置要求
@@ -80,7 +81,8 @@
 - Node.js 环境（npm 可用）
 - 企业微信管理员权限
 - 公网可访问的服务器或隧道（用于接收企业微信回调）
-- （可选）Python 3 + [FunASR](https://github.com/modelscope/FunASR) + PyTorch + FFmpeg —— 用于本地语音转文字（支持 CUDA / Apple MPS / CPU）
+- FFmpeg（用于视频截帧）：`brew install ffmpeg`（macOS）/ `apt install ffmpeg`（Linux）
+- （可选）`DASHSCOPE_API_KEY` / `BAILIAN_API_KEY` —— 用于云端语音转写（qwen3-asr-flash）、视频理解、文档解析
 
 ### 🛠️ 安装
 
@@ -161,14 +163,21 @@ npm install
       "WECOM_CALLBACK_AES_KEY": "你生成的EncodingAESKey",
       "WECOM_WEBHOOK_PATH": "/wecom/callback",
       "WECOM_PROXY": "",
-      "BAILIAN_API_KEY": "你的阿里云百炼 API Key（可选，用于文件提取和语音识别）",
-      "DASHSCOPE_API_KEY": "或者使用 DASHSCOPE_API_KEY（可选）"
+      "BAILIAN_API_KEY": "你的阿里云百炼 API Key（可选，用于视频理解、文件提取和语音识别）",
+      "DASHSCOPE_API_KEY": "或者使用 DASHSCOPE_API_KEY（可选）",
+      "WECOM_VIDEO_FRAMES": "10",
+      "WECOM_VIDEO_MODEL": "qwen3.5-plus"
     }
   }
 }
 ```
 
-> 💡 **百炼原生多模态支持**：如果你配置了 `BAILIAN_API_KEY`（或 `DASHSCOPE_API_KEY`），插件会自动将用户发送的语音（`.amr`）和各种文档（`.pdf`, `.docx`, `.xlsx` 等）上传到阿里云百炼，并通过原生模型直接解析和转写。实现了完全零本地依赖的多模态体验！
+> 💡 **百炼原生多模态支持**：如果你配置了 `BAILIAN_API_KEY`（或 `DASHSCOPE_API_KEY`），插件会自动：
+> - 📹 **视频理解**：使用 ffmpeg 截取关键帧 → 调用 Qwen VL（`qwen3.5-plus`）理解视频内容
+> - 🎙️ **语音转写**：将语音（`.amr`）通过 `qwen3-asr-flash` 进行云端 ASR 转写
+> - 📎 **文档解析**：将文档（`.pdf`, `.docx`, `.xlsx` 等）上传百炼进行原生解析
+>
+> 实现了完全零本地依赖（除 ffmpeg 外）的多模态体验！
 
 ##### 多账户配置
 
@@ -396,47 +405,45 @@ curl https://你的域名/wecom/callback
   <em>在企业微信管理后台「我的企业 → 微信插件」中，用个人微信扫码即可关联</em>
 </p>
 
-### 🎙️ 本地语音转文字（stt.py）
+### 🎙️ 语音转文字（云端 ASR）
 
-本 fork 新增了 `stt.py`，使用 [FunASR SenseVoice-Small](https://modelscope.cn/models/iic/SenseVoiceSmall) 模型进行本地语音识别，无需依赖企业微信自带的语音识别功能。
+语音消息通过百炼 `qwen3-asr-flash` 模型进行云端 ASR 转写，零本地依赖（无需 Python/PyTorch）。
 
 **工作流程：**
 1. 收到语音消息 → 下载 AMR 音频文件
-2. 使用 FFmpeg 转换为 WAV（16kHz 单声道）
-3. 调用 `stt.py` 进行 FunASR SenseVoice 语音识别
+2. 将 AMR 文件 Base64 编码为 Data URL
+3. 调用百炼 `qwen3-asr-flash` OpenAI 兼容 API（`input_audio` 格式）
 4. 将识别结果作为文本消息发送给 AI 代理
 
-**依赖安装：**
+**优先级：** 企业微信自带识别（Recognition 字段）> 百炼云端 ASR > 降级提示
+
+> 💡 需要配置 `DASHSCOPE_API_KEY`（或 `BAILIAN_API_KEY`）。可通过 `WECOM_STT_MODEL` 环境变量切换 ASR 模型。
+
+<details>
+<summary>📦 本地语音识别备选方案（stt.py）</summary>
+
+项目中保留了 `stt.py`，使用 [FunASR SenseVoice-Small](https://modelscope.cn/models/iic/SenseVoiceSmall) 进行本地语音识别（需要 Python 3 + PyTorch + FFmpeg）。
+
+适用场景：无法配置百炼 API Key，或需要完全离线运行。
 
 ```bash
-# FFmpeg（音频格式转换）
-brew install ffmpeg        # macOS
-# 或 apt install ffmpeg    # Linux
-
-# Python 依赖
+# 依赖安装
 pip install funasr modelscope torch torchaudio torchcodec
-```
 
-> 🍎 **Apple Silicon (M1/M2/M3/M4) 支持：** `stt.py` 会自动检测并使用 MPS (Metal Performance Shaders) 加速推理。首次运行时模型会从 ModelScope 自动下载（约 1GB）。
->
-> ⚠️ **macOS launchd 部署注意：** 如果 OpenClaw 以 launchd 服务运行，默认 `python3` 可能找不到 ML 依赖。需在 plist 中设置环境变量 `WECOM_STT_PYTHON` 指向正确的 Python 路径（如 conda 环境的 python3）。
-
-**独立使用：**
-
-```bash
+# 独立使用
 python3 stt.py /path/to/audio.wav
 ```
 
-> 💡 如果企业微信已开启语音识别（Recognition 字段），会优先使用企业微信的结果；仅在无 Recognition 字段时才会调用本地 STT。
+> 详细部署指南见 [`docs/stt-deploy-guide.md`](docs/stt-deploy-guide.md)
 
-> 🤖 **AI Agent 自动部署：** 详细的多环境（CUDA / MPS / CPU）安装部署指南见 [`docs/stt-deploy-guide.md`](docs/stt-deploy-guide.md)，可供 Claude Code 等 AI 编程助手直接参照执行自动化安装。
+</details>
 
 ### 📝 使用
 
 配置完成后，在企业微信或个人微信中找到你的应用，直接发送消息即可：
 
 1. 📱 在企业微信中找到你创建的应用
-2. 💬 发送文字、图片、语音、视频、文件消息
+2. 💬 发送文字、图片、语音、视频、链接消息
 3. 🤖 AI 会自动回复
 
 **<img src="docs/images/wechat-icon.png" width="16" height="16"> 个人微信接入：** 在企业微信管理后台「我的企业  → 微信插件」中，用个人微信扫码关联即可。
@@ -460,6 +467,12 @@ python3 stt.py /path/to/audio.wav
 | `WECOM_CALLBACK_AES_KEY` | ✅ | — | 回调配置的 EncodingAESKey（43 字符 Base64） |
 | `WECOM_WEBHOOK_PATH` | ❌ | `/wecom/callback` | Webhook 路径 |
 | `WECOM_PROXY` | ❌ | — | 出站 WeCom API 的 HTTP 代理地址（如 `http://10.x.x.x:8888`） |
+| `DASHSCOPE_API_KEY` | ❌ | — | 阿里云百炼 API Key（用于视频理解、语音转写、文档解析） |
+| `WECOM_VIDEO_FRAMES` | ❌ | `10` | 视频截帧数量（ffmpeg 均匀截取） |
+| `WECOM_VIDEO_MODEL` | ❌ | `qwen3.5-plus` | 视频理解使用的百炼模型名称 |
+| `WECOM_STT_API_KEY` | ❌ | 同 `DASHSCOPE_API_KEY` | 语音转写独立 API Key（优先于通用 Key） |
+| `WECOM_STT_BASE_URL` | ❌ | 同 `BAILIAN_BASE_URL` | 语音转写独立 Base URL（优先于通用 URL） |
+| `WECOM_STT_MODEL` | ❌ | `qwen3-asr-flash` | 语音转写使用的百炼 ASR 模型名称 |
 
 ### 🔍 故障排查
 
@@ -503,31 +516,14 @@ OpenClaw 要求插件同时提供 `sendText` **和** `sendMedia` 两个出站方
 
 #### ❌ 语音识别失败
 
-1. 确认已安装 FFmpeg：`ffmpeg -version`
-2. 确认已安装 Python 依赖：`python3 -c "from funasr import AutoModel"`
-3. 首次运行会从 ModelScope 下载模型（约 1GB），需要网络连接
-4. `stt.py` 会自动检测设备：CUDA GPU → Apple MPS → CPU（按优先级依次降级）
+1. 确认已配置 `DASHSCOPE_API_KEY`（或 `BAILIAN_API_KEY`）
+2. 检查日志中的 STT 错误信息（例如 `STT (qwen3-asr-flash) failed: 401`）
+3. 确认百炼账户有 `qwen3-asr-flash` 模型的免费额度或已开通计费
+4. 如果企业微信已开启语音识别（Recognition 字段），会优先使用企业微信的结果
 
 #### ❌ 语音消息发送了但 AI 没收到内容
 
 `RawBody` 为空字符串 `""` 时会短路 `??` 运算符的回退链，导致 AI 收到空消息。确认插件版本中 `RawBody` 设置为 `content || messageText || ""`（而非 `content || ""`）。
-
-#### ❌ macOS 上 STT 找不到 Python / 模型加载失败
-
-macOS 通过 launchd 启动 OpenClaw 时，PATH 不包含 conda 环境。解决方法：
-
-1. 在 `openclaw.json` 的 `env.vars` 中设置 `WECOM_STT_PYTHON` 指向 conda 环境中的 Python：
-   ```jsonc
-   {
-     "env": {
-       "vars": {
-         "WECOM_STT_PYTHON": "/path/to/anaconda3/envs/sci/bin/python3"
-       }
-     }
-   }
-   ```
-2. 如遇 Apple Silicon MPS 不支持某些操作，设置 `PYTORCH_ENABLE_MPS_FALLBACK=1`
-3. 较新版本 torchaudio 需要额外安装 `torchcodec`：`pip install torchcodec`
 
 #### ❌ AI 无法"看到"用户发送的图片
 
@@ -560,8 +556,8 @@ Node.js 原生 `fetch()` **不支持** `HTTPS_PROXY` 环境变量。插件使用
                     ┌───────────┼───────────┐
                     ▼           ▼           ▼
               ┌──────────┐ ┌────────┐ ┌──────────┐
-              │ 消息加解密 │ │ STT    │ │ Chat UI  │
-              │ AES-256  │ │ FunASR │ │ Broadcast│
+              │ 消息加解密 │ │ 百炼ASR │ │ Chat UI  │
+              │ AES-256  │ │ 视频VL  │ │ Broadcast│
               └──────────┘ └────────┘ └──────────┘
 ```
 
@@ -574,8 +570,9 @@ Node.js 原生 `fetch()` **不支持** `HTTPS_PROXY` 环境变量。插件使用
 5. 🔄 异步处理：根据消息类型分发处理
    - 📝 文本 → 直接交给 AI
    - 🖼️ 图片 → 下载保存 → AI Vision 分析
-   - 🎙️ 语音 → 下载 AMR → FFmpeg 转 WAV → FunASR STT → 文本交给 AI
-   - 📹 视频/📎 文件 → 下载保存 → 通知 AI
+   - 🎙️ 语音 → 下载 AMR → base64 编码 → 百炼 qwen3-asr-flash 云端 ASR → 文本交给 AI
+   - 📹 视频 → 下载 MP4 → ffmpeg 截 10 帧 → base64 编码 → 百炼 Qwen VL 理解 → 描述文本交给 AI
+   - 📎 文件 → 下载保存 → 百炼文档解析（或本地读取）→ 内容交给 AI
    - 🔗 链接 → 提取元信息 → 交给 AI
 6. 🤖 AI 代理生成回复
 7. 📤 回复经 Markdown 转换后，自动分段发送回企业微信
@@ -588,7 +585,7 @@ openclaw-wechat/
 ├── index.js                 # 入口文件（重导出）
 ├── src/
 │   └── index.js             # 插件主逻辑（1400+ 行）
-├── stt.py                   # 🎙️ 本地语音识别（FunASR SenseVoice）
+├── stt.py                   # 🎙️ 本地语音识别备选（FunASR SenseVoice，需 Python）
 ├── openclaw.plugin.json     # OpenClaw 插件描述文件（新格式）
 ├── clawdbot.plugin.json     # ClawdBot 插件描述文件（兼容旧版）
 ├── package.json             # npm 包配置 (v0.4.0)

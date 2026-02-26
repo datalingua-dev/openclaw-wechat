@@ -1043,6 +1043,10 @@ function createWebhookHandler(api, accountId) {
       processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "video", thumbMediaId: msgObj.ThumbMediaId, chatId, isGroupChat, accountId }).catch((err) => {
         api.logger.error?.(`wecom[${accountId}]: async video processing failed: ${err.message}`);
       });
+    } else if (msgType === "location") {
+      processInboundMessage({ api, fromUser, msgType: "location", locationX: msgObj.Location_X, locationY: msgObj.Location_Y, scale: msgObj.Scale, label: msgObj.Label, chatId, isGroupChat, accountId }).catch((err) => {
+        api.logger.error?.(`wecom[${accountId}]: async location processing failed: ${err.message}`);
+      });
     } else if (msgType === "file" && msgObj?.MediaId) {
       processInboundMessage({ api, fromUser, mediaId: msgObj.MediaId, msgType: "file", fileName: msgObj.FileName, fileSize: msgObj.FileSize, chatId, isGroupChat, accountId }).catch((err) => {
         api.logger.error?.(`wecom[${accountId}]: async file processing failed: ${err.message}`);
@@ -1143,6 +1147,104 @@ async function downloadWecomMedia({ corpId, corpSecret, mediaId }) {
     buffer: Buffer.from(buffer),
     contentType,
   };
+}
+
+// 从视频中均匀截取 N 帧图片（使用 ffmpeg）
+async function extractVideoFrames(videoPath, frameCount = 10) {
+  // 先获取视频总时长
+  const { stdout: probeOut } = await execFileAsync('ffprobe', [
+    '-v', 'error',
+    '-show_entries', 'format=duration',
+    '-of', 'csv=p=0',
+    videoPath
+  ], { timeout: 15000 });
+  const duration = parseFloat(probeOut.trim());
+  if (!duration || duration <= 0) {
+    throw new Error(`Cannot determine video duration: ${probeOut}`);
+  }
+
+  // 计算每帧的时间点（均匀分布，跳过首尾各 5%）
+  const startOffset = duration * 0.05;
+  const endOffset = duration * 0.95;
+  const interval = (endOffset - startOffset) / (frameCount - 1 || 1);
+
+  const mediaDir = join(process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), '.openclaw'), 'media', 'wecom');
+  await mkdir(mediaDir, { recursive: true });
+
+  const framePaths = [];
+  const ts = Date.now();
+
+  for (let i = 0; i < frameCount; i++) {
+    const seekTime = startOffset + interval * i;
+    const framePath = join(mediaDir, `vframe-${ts}-${i}.jpg`);
+    await execFileAsync('ffmpeg', [
+      '-ss', seekTime.toFixed(3),
+      '-i', videoPath,
+      '-frames:v', '1',
+      '-q:v', '5',       // JPEG 质量（2=最佳, 31=最差），5 兼顾质量与大小
+      '-y',
+      framePath
+    ], { timeout: 15000 });
+    framePaths.push(framePath);
+  }
+
+  // 计算实际 fps（帧率 = 帧数 / 时长）
+  const fps = frameCount / duration;
+
+  return { framePaths, duration, fps };
+}
+
+// 使用百炼视觉模型理解视频帧
+async function analyzeVideoWithQwen({ framePaths, fps, apiKey, model, chatUrl, logger }) {
+  // 将帧图片转为 base64 data URL
+  const videoFrames = [];
+  for (const fp of framePaths) {
+    const buf = await readFile(fp);
+    const base64 = buf.toString('base64');
+    videoFrames.push(`data:image/jpeg;base64,${base64}`);
+  }
+
+  const requestBody = {
+    model,
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'video',
+          video: videoFrames,
+          fps: Math.round(fps * 100) / 100  // 保留两位小数
+        },
+        {
+          type: 'text',
+          text: '请详细描述这个视频的内容和过程。'
+        }
+      ]
+    }]
+  };
+
+  logger?.info?.(`wecom: calling video analysis model=${model}, frames=${framePaths.length}, fps=${fps.toFixed(2)}`);
+
+  const res = await fetch(chatUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Video analysis API failed (${model}): ${res.status} ${errText}`);
+  }
+
+  const data = await res.json();
+  const description = data.choices?.[0]?.message?.content?.trim();
+  if (!description) {
+    throw new Error(`Video analysis (${model}) returned empty response`);
+  }
+
+  return description;
 }
 
 // 命令处理函数
@@ -1254,7 +1356,7 @@ const COMMANDS = {
 };
 
 // 异步处理入站消息 - 使用 gateway 内部 agent runtime API
-async function processInboundMessage({ api, fromUser, content, msgType, mediaId, picUrl, recognition, thumbMediaId, fileName, fileSize, linkTitle, linkDescription, linkUrl, linkPicUrl, chatId, isGroupChat, accountId }) {
+async function processInboundMessage({ api, fromUser, content, msgType, mediaId, picUrl, recognition, thumbMediaId, fileName, fileSize, linkTitle, linkDescription, linkUrl, linkPicUrl, locationX, locationY, scale, label, chatId, isGroupChat, accountId }) {
   const config = getWecomConfig(api, accountId);
   const cfg = api.config;
   const runtime = api.runtime;
@@ -1372,59 +1474,48 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
           messageText = `[语音消息] ${recognition}`;
         }
 
-        // 尝试用百炼原生能力转写
-        const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
-        // 文件上传必须用标准端点（coding子域名不支持 /files）
-        const bailianFilesUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1/files';
-        // 聊天补全可以用自定义端点
-        const bailianChatUrl = ((process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '')) + '/chat/completions';
-        if (!messageText && bailianApiKey) {
+        // 尝试用百炼 qwen3-asr-flash 转写（OpenAI 兼容，base64 编码直接调用）
+        // STT 使用独立的 API Key 和 Base URL，回退到通用百炼配置
+        const sttApiKey = process.env.WECOM_STT_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
+        const sttChatUrl = ((process.env.WECOM_STT_BASE_URL || process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '')) + '/chat/completions';
+        if (!messageText && sttApiKey) {
+          const sttModel = process.env.WECOM_STT_MODEL || 'qwen3-asr-flash';
           try {
-            const formData = new FormData();
-            formData.append('file', new Blob([buffer]), `voice-${ts}.amr`);
-            formData.append('purpose', 'file-extract');
-            const upRes = await fetch(bailianFilesUrl, {
+            // 将音频 base64 编码为 Data URL（qwen3-asr-flash 支持 input_audio 格式）
+            const audioBase64 = buffer.toString('base64');
+            const audioDataUrl = `data:audio/amr;base64,${audioBase64}`;
+            api.logger.info?.(`wecom: calling STT model=${sttModel}, audio size=${buffer.length} bytes`);
+
+            const chatRes = await fetch(sttChatUrl, {
               method: 'POST',
-              headers: { 'Authorization': `Bearer ${bailianApiKey}` },
-              body: formData
-            });
-            if (upRes.ok) {
-              const fileData = await upRes.json();
-              if (fileData.id) {
-                api.logger.info?.(`wecom: uploaded voice to bailian, fileId=${fileData.id}`);
-                const chatRes = await fetch(bailianChatUrl, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${bailianApiKey}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    model: "qwen-audio-turbo",
-                    messages: [{
-                      role: "system",
-                      content: "你是一个语音转写助手，请将用户提供的音频准确地转写为文本，不要输出额外的内容。"
-                    },{
-                      role: "user",
-                      content: [
-                        { type: "audio", audio_url: { url: `fileid://${fileData.id}` } },
-                        { type: "text", text: "转写音频" }
-                      ]
-                    }]
-                  })
-                });
-                if (chatRes.ok) {
-                  const chatData = await chatRes.json();
-                  const transcript = chatData.choices?.[0]?.message?.content?.trim();
-                  if (transcript) {
-                    messageText = `[语音消息] ${transcript}`;
-                    api.logger.info?.(`wecom: bailian STT transcribed: ${transcript.slice(0, 50)}`);
-                  }
-                } else {
-                  api.logger.warn?.(`wecom: bailian chat STT failed: ${chatRes.status} ${await chatRes.text()}`);
+              headers: { 'Authorization': `Bearer ${sttApiKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: sttModel,
+                messages: [{
+                  role: "user",
+                  content: [
+                    { type: "input_audio", input_audio: { data: audioDataUrl } }
+                  ]
+                }],
+                stream: false,
+                asr_options: {
+                  enable_itn: true,
+                  enable_punc: true
                 }
+              })
+            });
+            if (chatRes.ok) {
+              const chatData = await chatRes.json();
+              const transcript = chatData.choices?.[0]?.message?.content?.trim();
+              if (transcript) {
+                messageText = `[语音消息] ${transcript}`;
+                api.logger.info?.(`wecom: STT (${sttModel}) transcribed: ${transcript.slice(0, 80)}`);
               }
             } else {
-              api.logger.warn?.(`wecom: bailian file upload failed: ${upRes.status} ${await upRes.text()}`);
+              api.logger.warn?.(`wecom: STT (${sttModel}) failed: ${chatRes.status} ${await chatRes.text()}`);
             }
           } catch (sttErr) {
-            api.logger.warn?.(`wecom: bailian cloud STT error: ${sttErr.message}`);
+            api.logger.warn?.(`wecom: cloud STT error: ${sttErr.message}`);
           }
         }
         
@@ -1438,7 +1529,7 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       }
     }
 
-    // 处理视频消息 — 通过 OpenClaw 多模态管线传给 LLM
+    // 处理视频消息 — ffmpeg 截帧 + 视觉模型视频理解
     if (msgType === "video" && mediaId) {
       api.logger.info?.(`wecom: received video message mediaId=${mediaId}`);
 
@@ -1449,8 +1540,42 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         const videoTempPath = join(mediaDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
         await writeFile(videoTempPath, buffer);
         mediaTempPath = videoTempPath;
-        messageText = `[用户发送了一个视频，已保存到：${videoTempPath}]\n\n请使用 Read 工具查看视频文件，或告知用户您已收到视频。`;
         api.logger.info?.(`wecom: video saved to ${videoTempPath}, size=${buffer.length} bytes`);
+
+        // 尝试使用 ffmpeg 截帧 + 视觉模型理解视频内容
+        const bailianApiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
+        const videoFrameCount = asNumber(process.env.WECOM_VIDEO_FRAMES, 10);
+        const videoModel = process.env.WECOM_VIDEO_MODEL || 'qwen3.5-plus';
+        const bailianChatUrl = ((process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '')) + '/chat/completions';
+
+        if (bailianApiKey) {
+          try {
+            // Step 1: ffmpeg 截取帧
+            api.logger.info?.(`wecom: extracting ${videoFrameCount} frames from video...`);
+            const { framePaths, duration, fps } = await extractVideoFrames(videoTempPath, videoFrameCount);
+            mediaCleanupPaths.push(...framePaths); // 帧图片稍后清理
+            api.logger.info?.(`wecom: extracted ${framePaths.length} frames, duration=${duration.toFixed(1)}s, fps=${fps.toFixed(2)}`);
+
+            // Step 2: 调用视觉模型理解视频
+            const videoDescription = await analyzeVideoWithQwen({
+              framePaths,
+              fps,
+              apiKey: bailianApiKey,
+              model: videoModel,
+              chatUrl: bailianChatUrl,
+              logger: api.logger
+            });
+
+            messageText = `[用户发送了一个视频（时长 ${duration.toFixed(1)} 秒）]\n\n视频内容描述：\n${videoDescription}`;
+            api.logger.info?.(`wecom: video analysis done (${videoModel}), description length=${videoDescription.length}`);
+          } catch (vlErr) {
+            api.logger.warn?.(`wecom: video analysis (${videoModel}) failed: ${vlErr.message}`);
+            // 降级：保留视频文件路径，让 AI 知道有视频但无法分析
+            messageText = `[用户发送了一个视频，已保存到：${videoTempPath}]\n\n视频自动分析失败（${vlErr.message?.slice(0, 80)}），请告知用户视频分析暂时不可用，但已收到视频。`;
+          }
+        } else {
+          messageText = `[用户发送了一个视频，已保存到：${videoTempPath}]\n\n未配置百炼API Key，无法分析视频内容。请告知用户已收到视频。`;
+        }
       } catch (downloadErr) {
         api.logger.warn?.(`wecom: failed to download video: ${downloadErr.message}`);
         messageText = "[用户发送了一个视频，但下载失败]\n\n请告诉用户视频处理暂时不可用。";
@@ -1533,6 +1658,12 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         api.logger.warn?.(`wecom: failed to download file: ${downloadErr.message}`);
         messageText = `[用户发送了一个文件${fileName ? `：${fileName}` : ''}，但下载失败]\n\n请告诉用户文件处理暂时不可用。`;
       }
+    }
+
+    // 处理位置消息
+    if (msgType === "location") {
+      api.logger.info?.(`wecom: received location message lat=${locationX}, lng=${locationY}, label=${label}`);
+      messageText = `[用户发送了一个位置]\n位置名称：${label || '(未知位置)'}\n坐标：纬度 ${locationX}，经度 ${locationY}\n地图缩放级别：${scale || 'N/A'}\n\n请根据用户分享的位置信息回复用户。`;
     }
 
     // 处理链接分享消息
@@ -1709,9 +1840,10 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         },
       });
     } finally {
-      // 清理语音 AMR 源文件（WAV 和其他媒体文件保留，供 AI 后续对话引用）
+      // 清理临时媒体文件（语音 AMR、视频截帧 JPG）
+      // WAV 和其他媒体文件保留，供 AI 后续对话引用
       for (const cleanupPath of mediaCleanupPaths) {
-        if (cleanupPath.endsWith('.amr')) {
+        if (cleanupPath.endsWith('.amr') || cleanupPath.includes('vframe-')) {
           unlink(cleanupPath).catch(() => {});
         }
       }
