@@ -468,6 +468,118 @@ async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId }) {
   });
 }
 
+// 发送语音消息（带限流）
+async function sendWecomVoice({ corpId, corpSecret, agentId, toUser, mediaId }) {
+  return apiLimiter.execute(async () => {
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
+    const body = {
+      touser: toUser,
+      msgtype: "voice",
+      agentid: agentId,
+      voice: { media_id: mediaId },
+    };
+    const sendRes = await wecomFetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const sendJson = await sendRes.json();
+    if (sendJson?.errcode !== 0) {
+      throw new Error(`WeCom voice send failed: ${JSON.stringify(sendJson)}`);
+    }
+    return sendJson;
+  });
+}
+
+// 发送文本卡片消息（带限流）
+// description 支持 HTML 标签: <div class="gray">灰色</div> <div class="highlight">高亮</div> <div class="normal">默认</div>
+async function sendWecomTextCard({ corpId, corpSecret, agentId, toUser, title, description, url, btntxt }) {
+  return apiLimiter.execute(async () => {
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
+    const body = {
+      touser: toUser,
+      msgtype: "textcard",
+      agentid: agentId,
+      textcard: {
+        title,
+        description,
+        url: url || "",
+        ...(btntxt ? { btntxt } : {}),
+      },
+    };
+    const sendRes = await wecomFetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const sendJson = await sendRes.json();
+    if (sendJson?.errcode !== 0) {
+      throw new Error(`WeCom textcard send failed: ${JSON.stringify(sendJson)}`);
+    }
+    return sendJson;
+  });
+}
+
+// 发送图文消息（带限流）
+// articles: Array<{ title, description?, url, picurl? }>，最多 8 条
+async function sendWecomNews({ corpId, corpSecret, agentId, toUser, articles }) {
+  return apiLimiter.execute(async () => {
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
+    const body = {
+      touser: toUser,
+      msgtype: "news",
+      agentid: agentId,
+      news: {
+        articles: (articles || []).slice(0, 8).map(a => ({
+          title: a.title || "",
+          description: a.description || "",
+          url: a.url || "",
+          ...(a.picurl ? { picurl: a.picurl } : {}),
+        })),
+      },
+    };
+    const sendRes = await wecomFetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const sendJson = await sendRes.json();
+    if (sendJson?.errcode !== 0) {
+      throw new Error(`WeCom news send failed: ${JSON.stringify(sendJson)}`);
+    }
+    return sendJson;
+  });
+}
+
+// 发送 Markdown 消息（带限流）
+// 注意：仅在企业微信客户端可见，个人微信通过「微信插件」不支持
+// 支持的语法子集：标题、加粗、链接、引用、字体颜色（<font color="info/warning/comment">）
+async function sendWecomMarkdown({ corpId, corpSecret, agentId, toUser, content }) {
+  return apiLimiter.execute(async () => {
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
+    const body = {
+      touser: toUser,
+      msgtype: "markdown",
+      agentid: agentId,
+      markdown: { content },
+    };
+    const sendRes = await wecomFetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const sendJson = await sendRes.json();
+    if (sendJson?.errcode !== 0) {
+      throw new Error(`WeCom markdown send failed: ${JSON.stringify(sendJson)}`);
+    }
+    return sendJson;
+  });
+}
+
 // 从 URL 下载媒体文件
 async function fetchMediaFromUrl(url) {
   // 支持本地文件路径
@@ -645,6 +757,8 @@ const WecomChannelPlugin = {
             await sendWecomImage({ corpId, corpSecret, agentId, toUser: to, mediaId });
           } else if (type === "video") {
             await sendWecomVideo({ corpId, corpSecret, agentId, toUser: to, mediaId });
+          } else if (type === "voice") {
+            await sendWecomVoice({ corpId, corpSecret, agentId, toUser: to, mediaId });
           } else {
             await sendWecomFile({ corpId, corpSecret, agentId, toUser: to, mediaId });
           }
@@ -700,6 +814,8 @@ const WecomChannelPlugin = {
             await sendWecomImage({ corpId, corpSecret, agentId, toUser: userId, mediaId });
           } else if (type === "video") {
             await sendWecomVideo({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          } else if (type === "voice") {
+            await sendWecomVoice({ corpId, corpSecret, agentId, toUser: userId, mediaId });
           } else {
             await sendWecomFile({ corpId, corpSecret, agentId, toUser: userId, mediaId });
           }
