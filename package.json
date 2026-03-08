@@ -3,7 +3,7 @@
   "version": "0.4.2",
   "private": true,
   "type": "module",
-  "description": "WeCom (\u4f01\u4e1a\u5fae\u4fe1) channel plugin for OpenClaw (internal apps).",
+  "description": "WeCom (企业微信) channel plugin for OpenClaw (internal apps).",
   "license": "MIT",
   "exports": "./index.js",
   "openclaw": {
@@ -18,7 +18,7 @@
     "channel": {
       "id": "wecom",
       "label": "WeCom",
-      "selectionLabel": "WeCom (\u4f01\u4e1a\u5fae\u4fe1\u81ea\u5efa\u5e94\u7528)",
+      "selectionLabel": "WeCom (企业微信自建应用)",
       "docsPath": "/channels/wecom",
       "docsLabel": "wecom",
       "blurb": "Enterprise WeChat internal app via callback + send API.",
@@ -31,7 +31,8 @@
     }
   },
   "dependencies": {
-    "openclaw": "*",
-    "fast-xml-parser": "^4.3.6"
+    "fast-xml-parser": "^4.3.6",
+    "node-fetch": "^3.3.2",
+    "openclaw": "*"
   }
 }

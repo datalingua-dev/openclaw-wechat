@@ -11,9 +11,9 @@ import { promisify } from "node:util";
 import { readFile, writeFile, unlink, mkdir, appendFile } from "node:fs/promises";
 import { existsSync, appendFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+// import registerVideoGeneratorPlugin from "./video-generator-plugin.js";
 
 const _require = createRequire(import.meta.url);
 const PLUGIN_VERSION = _require("../package.json").version;
@@ -157,6 +157,199 @@ async function getWecomAccessToken({ corpId, corpSecret }) {
     }
   })();
   return cache.refreshPromise;
+}
+
+// 用户名缓存（避免重复调用 API）
+const userNameCache = new Map();
+
+// 获取企业微信用户名称（优先内部成员 → 外部联系人 → 降级为 userId）
+async function getWecomUserName({ corpId, corpSecret, userId, logger }) {
+  const cacheKey = `${corpId}:${userId}`;
+  if (userNameCache.has(cacheKey)) {
+    return userNameCache.get(cacheKey);
+  }
+
+  let userName = null;
+
+  try {
+    // 尝试 1：内部成员接口
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const memberUrl = `https://qyapi.weixin.qq.com/cgi-bin/user/get?access_token=${encodeURIComponent(accessToken)}&userid=${encodeURIComponent(userId)}`;
+    const memberRes = await wecomFetch(memberUrl);
+    const memberJson = await memberRes.json();
+    if (memberJson.errcode === 0 && memberJson.name) {
+      userName = memberJson.name;
+      logger?.info?.(`wecom: resolved user name via member API: ${userId} → ${userName}`);
+    }
+  } catch (err) {
+    logger?.warn?.(`wecom: member API lookup failed for ${userId}: ${err.message}`);
+  }
+
+  if (!userName) {
+    try {
+      // 尝试 2：外部联系人接口
+      const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+      const externalUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/get?access_token=${encodeURIComponent(accessToken)}&external_userid=${encodeURIComponent(userId)}`;
+      const externalRes = await wecomFetch(externalUrl);
+      const externalJson = await externalRes.json();
+      if (externalJson.errcode === 0 && externalJson.external_contact?.name) {
+        userName = externalJson.external_contact.name;
+        logger?.info?.(`wecom: resolved user name via external contact API: ${userId} → ${userName}`);
+      }
+    } catch (err) {
+      logger?.warn?.(`wecom: external contact API lookup failed for ${userId}: ${err.message}`);
+    }
+  }
+
+  // 降级：使用 userId
+  if (!userName) {
+    userName = userId;
+    logger?.info?.(`wecom: using userId as fallback name: ${userId}`);
+  }
+
+  userNameCache.set(cacheKey, userName);
+  return userName;
+}
+
+// 转人工标记检测与处理
+const TRANSFER_TO_HUMAN_MARKER = '[TRANSFER_TO_HUMAN]';
+
+function detectTransferToHuman(text) {
+  if (!text) return { isTransfer: false, cleanText: text };
+  if (text.includes(TRANSFER_TO_HUMAN_MARKER)) {
+    // 移除标记，保留面向客户的消息
+    const cleanText = text.replace(TRANSFER_TO_HUMAN_MARKER, '').trim();
+    return { isTransfer: true, cleanText };
+  }
+  return { isTransfer: false, cleanText: text };
+}
+
+// 使用百炼 DashScope API 对对话历史进行"秘书式"摘要
+async function summarizeConversation({ historyEntries, customerMessage, customerName, logger }) {
+  const apiKey = process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY;
+  const model = process.env.WECOM_SUMMARY_MODEL || 'qwen-turbo';
+  const chatUrl = ((process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '')) + '/chat/completions';
+
+  // 拼接对话记录文本
+  const allMessages = [];
+  if (historyEntries && historyEntries.length > 0) {
+    for (const entry of historyEntries) {
+      // sessionHistories 中 sender 为用户的 userId（如 HuangHui），全部是客户消息
+      allMessages.push(`客户(${customerName || entry.sender})：${entry.body}`);
+    }
+  }
+  // 当前触发转人工的消息也加上
+  if (customerMessage) {
+    allMessages.push(`客户(${customerName})：${customerMessage}`);
+  }
+
+  const conversationText = allMessages.join('\n');
+
+  // 没有对话内容，直接返回
+  if (!conversationText.trim()) {
+    return '(无对话记录)';
+  }
+
+  // 无 API Key 时降级：直接返回对话记录
+  if (!apiKey) {
+    logger?.warn?.('wecom: no DASHSCOPE_API_KEY configured, falling back to raw conversation for transfer summary');
+    return conversationText;
+  }
+
+  try {
+    const res = await fetch(chatUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是一个高效的专业秘书。你的老板是一家公司的负责人，现在AI客服遇到了无法处理的问题需要转人工。请你根据以下客户与AI客服的对话记录，用简洁专业的语言为老板汇总：1）客户的核心诉求是什么；2）AI客服已经做了哪些回应；3）为什么需要人工介入。要求：准确、详细但不啰嗦，让老板一眼看懂情况，快速接手处理。直接输出摘要内容，不要加标题。',
+          },
+          {
+            role: 'user',
+            content: conversationText,
+          },
+        ],
+        max_tokens: 500,
+        temperature: 0.3,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`DashScope API error: ${res.status} ${errText.slice(0, 200)}`);
+    }
+
+    const json = await res.json();
+    const summary = json?.choices?.[0]?.message?.content?.trim();
+    if (summary) {
+      logger?.info?.(`wecom: conversation summary generated (${model}), length=${summary.length}`);
+      return summary;
+    }
+    throw new Error('Empty response from LLM');
+  } catch (err) {
+    logger?.warn?.(`wecom: conversation summary failed (${model}): ${err.message}, falling back to raw conversation`);
+    // 降级：返回原始对话记录
+    return conversationText;
+  }
+}
+
+async function handleTransferToHuman({ config, corpId, corpSecret, agentId, fromUser, originalText, cleanText, customerMessage, historyEntries, sessionId, logger, api }) {
+  // 获取客户名称
+  const customerName = await getWecomUserName({ corpId, corpSecret, userId: fromUser, logger });
+
+  // 从配置中读取转接目标
+  const transferTo = config.transferTo;
+  if (!transferTo?.userId) {
+    logger?.warn?.('wecom: [TRANSFER_TO_HUMAN] detected but no transferTo.userId configured, skipping boss notification');
+    return;
+  }
+
+  // 调用 LLM 对对话历史进行摘要（像秘书一样汇总给老板）
+  const summary = await summarizeConversation({
+    historyEntries,
+    customerMessage,
+    customerName,
+    logger,
+  });
+
+  // 构建通知消息
+  const notifyText = `🔔 转人工提醒\n\n客户：${customerName}${customerName !== fromUser ? `（${fromUser}）` : ''}\n来源应用：${config.accountId || 'default'}\n\n📋 咨询摘要：\n${summary}\n\n请尽快跟进处理。`;
+
+  // 确定通知使用的账号配置
+  const notifyAccountId = transferTo.notifyAccountId || config.accountId || 'default';
+  let notifyConfig = config;
+  if (notifyAccountId !== config.accountId) {
+    // 如果通知账号和当前账号不同，尝试获取通知账号的配置
+    try {
+      const allAccounts = api?.config?.channels?.wecom?.accounts;
+      if (allAccounts?.[notifyAccountId]) {
+        const acct = allAccounts[notifyAccountId];
+        notifyConfig = { corpId: acct.corpId, corpSecret: acct.corpSecret, agentId: acct.agentId };
+      }
+    } catch (e) {
+      logger?.warn?.(`wecom: failed to get notify account config: ${e.message}`);
+    }
+  }
+
+  try {
+    await sendWecomText({
+      corpId: notifyConfig.corpId,
+      corpSecret: notifyConfig.corpSecret,
+      agentId: notifyConfig.agentId,
+      toUser: transferTo.userId,
+      text: notifyText,
+      logger,
+    });
+    logger?.info?.(`wecom: transfer-to-human notification sent to ${transferTo.userId} via account ${notifyAccountId}`);
+  } catch (notifyErr) {
+    logger?.error?.(`wecom: failed to send transfer-to-human notification: ${notifyErr.message}`);
+  }
 }
 
 // Markdown 转换为企业微信纯文本
@@ -686,6 +879,7 @@ const WecomChannelPlugin = {
           callbackToken: account.callbackToken,
           callbackAesKey: account.callbackAesKey,
           webhookPath: account.webhookPath || `/wecom/${id}`,
+          transferTo: account.transferTo,
         };
       }
       // 2. 回退到环境变量
@@ -976,6 +1170,7 @@ function getWecomConfig(api, accountId = null) {
         callbackAesKey,
         webhookPath,
         enabled: accountConfig.enabled !== false,
+        transferTo: accountConfig.transferTo,
       };
       wecomAccounts.set(targetAccountId, config);
       return config;
@@ -1188,6 +1383,13 @@ export default function register(api) {
   }
 
   api.registerChannel({ plugin: WecomChannelPlugin });
+
+  // 注册通用视频生成工具
+  // try {
+  //   registerVideoGeneratorPlugin(api);
+  // } catch (err) {
+  //   api.logger.error?.(`wecom: failed to register video plugin: ${err.message}`);
+  // }
 
   api.registerGatewayMethod("wecom.init", async (ctx, nodeId, params) => {
     gatewayBroadcastCtx = ctx;
@@ -1470,6 +1672,48 @@ const COMMANDS = {
   "/clear": handleClearCommand,
   "/status": handleStatusCommand,
 };
+
+// 处理媒体发送
+async function deliverMediaPayload({ payload, corpId, corpSecret, agentId, toUser, logger }) {
+  const mediaUrls = [];
+  if (payload.mediaUrl) mediaUrls.push(payload.mediaUrl);
+  if (payload.media) mediaUrls.push(payload.media);
+  if (payload.attachments && Array.isArray(payload.attachments)) {
+    for (const att of payload.attachments) {
+      if (att.url) mediaUrls.push(att.url);
+    }
+  }
+
+  const uniqueUrls = [...new Set(mediaUrls)];
+
+  for (const mediaUrl of uniqueUrls) {
+    try {
+      logger?.info?.(`wecom: delivering media: ${mediaUrl}`);
+      const { buffer } = await fetchMediaFromUrl(mediaUrl);
+      let { type, filename } = resolveWecomMediaType(mediaUrl);
+
+      // 企业微信要求 voice 必须是 amr 格式，其他格式走文件发送
+      if (type === "voice" && !filename.toLowerCase().endsWith(".amr")) {
+        type = "file";
+      }
+
+      const mediaId = await uploadWecomMedia({ corpId, corpSecret, type, buffer, filename });
+
+      if (type === "image") {
+        await sendWecomImage({ corpId, corpSecret, agentId, toUser, mediaId });
+      } else if (type === "video") {
+        await sendWecomVideo({ corpId, corpSecret, agentId, toUser, mediaId });
+      } else if (type === "voice") {
+        await sendWecomVoice({ corpId, corpSecret, agentId, toUser, mediaId });
+      } else {
+        await sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId });
+      }
+    } catch (err) {
+      logger?.warn?.(`wecom: failed to deliver media ${mediaUrl}: ${err.message}`);
+      await sendWecomText({ corpId, corpSecret, agentId, toUser, text: `[系统提示: 媒体附件发送失败, 请查看链接 ${mediaUrl}]` });
+    }
+  }
+}
 
 // 异步处理入站消息 - 使用 gateway 内部 agent runtime API
 async function processInboundMessage({ api, fromUser, content, msgType, mediaId, picUrl, recognition, thumbMediaId, fileName, fileSize, linkTitle, linkDescription, linkUrl, linkPicUrl, locationX, locationY, scale, label, chatId, isGroupChat, accountId }) {
@@ -1916,13 +2160,42 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
         cfg,
         dispatcherOptions: {
           deliver: async (payload, info) => {
-            // 发送回复到企业微信
+            // 1. 处理媒体附件
+            if (payload.media || payload.mediaUrl || (payload.attachments && payload.attachments.length > 0)) {
+              await deliverMediaPayload({
+                payload, corpId, corpSecret, agentId, toUser: fromUser, logger: api.logger
+              });
+            }
+
+            // 2. 发送回复到企业微信
             if (payload.text) {
               api.logger.info?.(`wecom: delivering ${info.kind} reply, length=${payload.text.length}`);
 
+              // 检测转人工标记
+              const { isTransfer, cleanText } = detectTransferToHuman(payload.text);
+
               // 应用 Markdown 转换
-              const formattedReply = markdownToWecomText(payload.text);
+              const formattedReply = markdownToWecomText(cleanText);
               await sendWecomText({ corpId, corpSecret, agentId, toUser: fromUser, text: formattedReply, logger: api.logger });
+
+              // 如果检测到转人工标记，发送通知给老板
+              if (isTransfer) {
+                api.logger.info?.(`wecom: [TRANSFER_TO_HUMAN] detected, notifying boss...`);
+                await handleTransferToHuman({
+                  config,
+                  corpId,
+                  corpSecret,
+                  agentId,
+                  fromUser,
+                  originalText: payload.text,
+                  cleanText: formattedReply,
+                  customerMessage: messageText,
+                  historyEntries: sessionHistories.get(sessionId) || [],
+                  sessionId,
+                  logger: api.logger,
+                  api,
+                });
+              }
 
               api.logger.info?.(`wecom: sent AI reply to ${fromUser}: ${formattedReply.slice(0, 50)}...`);
 

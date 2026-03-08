@@ -62,6 +62,7 @@
 #### 🚀 高级功能
 - [x] 👥 多账户支持（`WECOM_<ACCOUNT>_*` 格式）
 - [x] 🏠 多智能体路由（按 peer/accountId/channel 绑定匹配不同 Agent）
+- [x] 🙋‍♂️ **自动转人工机制**（支持拦截特定的标签触发企业内部报警消息）
 - [x] 🔒 Token 并发安全（Promise 锁）
 - [x] 🖥️ Chat UI 集成（Transcript 写入 + Gateway 实时广播）
 - [x] 🌐 HTTP 代理支持（`WECOM_PROXY`）
@@ -299,6 +300,42 @@ npm install
   ]
 }
 ```
+
+#### 🙋‍♂️ 自动转人工提醒机制
+
+插件内置了**转人工机制**。当 AI 客服无法解答客户问题时，可以通过输出特定的标记（如 `[TRANSFER_TO_HUMAN]`），触发插件发送一条内部提醒消息给真正的企业管理员/业务人员，同时自动向客户屏蔽该标记。
+
+**工作流程：**
+1. 你的 AI Agent 的 Prompt（如 `AGENTS.md`）中设置规则："遇到退款或不确定的问题，请回复内含 `[TRANSFER_TO_HUMAN]` 标记的话术，例如：'这个问题超出了我的能力范围，我已经帮您呼叫人类客服，请稍等 [TRANSFER_TO_HUMAN]'"。
+2. 插件在向用户发送回复前，检测到该标记，会将 `[TRANSFER_TO_HUMAN]` 抹除后发给用户。
+3. 同时，插件会通过企微 API获取当前用户的名称，并向你配置的管理员（老板/专员）企微账号发送一条"转人工提醒"及聊天原文。
+
+**配置方法：**
+在需要启用该功能的企微账号下，配置 `transferTo` 字段：
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "accounts": {
+        "support": {
+          "corpId": "ww你的企业ID",
+          "corpSecret": "客服应用的Secret",
+          "agentId": 1000003,
+          "callbackToken": "...",
+          "callbackAesKey": "...",
+          "transferTo": {
+            "userId": "LaoBan",                    // 接收提醒的企业微信内成员的 UserID
+            "notifyAccountId": "support"           // 发送提醒使用的企微应用 (可选，默认使用当前应用)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+> 💡 建议同时在企微后台为该应用开启**成员详情和通讯录读取权限**，以便转人工提醒能自动将客户的 UserID 转为真实称呼展示给管理员。
 
 #### 第五步：配置公网访问 🔗
 
