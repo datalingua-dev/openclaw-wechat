@@ -11,3 +11,4 @@ tmp/
 dist/
 __pycache__/
 *.pyc
+agent-templates/

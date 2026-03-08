@@ -6,7 +6,7 @@
 
 **openclaw-wechat** 是一个 [OpenClaw](https://openclaw.ai)（原 ClawdBot/Moltbot）的 <img src="docs/images/wecom-icon.png" width="16" height="16"> **企业微信渠道插件**，让你的 AI 智能体通过企业微信自建应用与用户对话。接入企业微信后，<img src="docs/images/wechat-icon.png" width="16" height="16"> **个人微信用户也可以直接对话**——只需在企业微信管理后台「我的企业 → 微信插件」中扫码关联即可。
 
-> 🍴 本项目 fork 自 [dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)（v0.1.0，作者：勾勾的数字生命），并进行了大量功能扩展以兼容新版 OpenClaw。
+> 🍴 本项目 fork 自 [Xueheng-Li/openclaw-wechat](https://github.com/Xueheng-Li/openclaw-wechat)，并进行了大量功能扩展以兼容新版 OpenClaw。
 
 ### 🧠 v0.4.0 — 多智能体路由支持 (Multi-Agent Routing)
 
@@ -688,7 +688,7 @@ python3 skills/wecom-notify/scripts/send_wecom.py --file /path/to/report.pdf
 - 🌐 [OpenClaw 官方网站](https://openclaw.ai)
 - 📖 [企业微信开发文档](https://developer.work.weixin.qq.com/document/)
 - 🔐 [企业微信消息加解密](https://developer.work.weixin.qq.com/document/path/90968)
-- 🍴 [上游项目：dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)
+- 🍴 [上游项目：Xueheng-Li/openclaw-wechat](https://github.com/Xueheng-Li/openclaw-wechat)
 - 🎙️ [FunASR SenseVoice](https://modelscope.cn/models/iic/SenseVoiceSmall)
 
 ## 📄 许可证
@@ -698,6 +698,7 @@ python3 skills/wecom-notify/scripts/send_wecom.py --file /path/to/report.pdf
 ## 🙏 致谢
 
 - 🍴 原始项目：[dingxiang-me/OpenClaw-Wechat](https://github.com/dingxiang-me/OpenClaw-Wechat)，作者 **勾勾的数字生命** ([@dingxiang-me](https://github.com/dingxiang-me))
+- 🌟 增强升级版：感谢 [Xueheng-Li/openclaw-wechat](https://github.com/Xueheng-Li/openclaw-wechat) 为该项目提供了大量功能扩展和维护。
 - 🤖 [OpenClaw](https://openclaw.ai)，由 Peter Steinberger 和 OpenClaw 社区开发
 - 🎙️ [FunASR SenseVoice](https://github.com/modelscope/FunASR)，由阿里巴巴达摩院开发
 
