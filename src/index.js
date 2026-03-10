@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { readFile, writeFile, unlink, mkdir, appendFile } from "node:fs/promises";
 import { existsSync, appendFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 // import registerVideoGeneratorPlugin from "./video-generator-plugin.js";
@@ -1038,6 +1039,7 @@ let gatewayBroadcastCtx = null;
 // 写入消息到 session transcript 文件，使 Chat UI 可以显示
 async function writeToTranscript({ sessionKey, role, text, logger, agentId }) {
   try {
+    const { join } = await import("node:path");  // ← 加这一行
     const stateDir = process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || join(homedir(), ".openclaw");
     const resolvedAgentId = agentId || "main";
     const sessionsDir = join(stateDir, "agents", resolvedAgentId, "sessions");
@@ -1372,6 +1374,9 @@ function createWebhookHandler(api, accountId) {
   };
 }
 
+import registerVideoGeneratorPlugin from "./video-generator-plugin.js";
+import registerFitnessCronPlugin from "./fitness-cron-plugin.js";
+
 export default function register(api) {
   gatewayRuntime = api.runtime;
 
@@ -1390,6 +1395,13 @@ export default function register(api) {
   // } catch (err) {
   //   api.logger.error?.(`wecom: failed to register video plugin: ${err.message}`);
   // }
+
+  // 注册 Fitness 教练专用的定时提醒插件
+  try {
+    registerFitnessCronPlugin(api);
+  } catch (err) {
+    api.logger.error?.(`wecom: failed to register fitness cron plugin: ${err.message}`);
+  }
 
   api.registerGatewayMethod("wecom.init", async (ctx, nodeId, params) => {
     gatewayBroadcastCtx = ctx;
@@ -2057,7 +2069,8 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       channel: "WeCom",
       from: fromUser,
       timestamp: Date.now(),
-      body: messageText,
+      // 在消息前注入 ID，满足 AGENTS.md 中“识别唯一ID”的要求
+      body: `[WeCom_ID: ${fromUser}] ${messageText}`,
       chatType,
       sender: { name: fromUser, id: fromUser },
       envelope: envelopeOptions,
@@ -2100,6 +2113,13 @@ async function processInboundMessage({ api, fromUser, content, msgType, mediaId,
       RawBody: content || messageText || "",
       From: isGroupChat ? `wecom:group:${chatId}` : `wecom:${fromUser}`,
       To: `wecom:${fromUser}`,
+      // 显式指定 userId，确保 memory_add 工具能将数据归属到正确用户
+      userId: fromUser,
+      // 同时在 metadata 中也存一份，方便 AI 某些高级指令读取
+      metadata: {
+        wecom_id: fromUser,
+        real_id: fromUser
+      },
       SessionKey: sessionId,
       AccountId: config.accountId || "default",
       ChatType: isGroupChat ? "group" : "direct",
