@@ -1,12 +1,71 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import cronParser from 'cron-parser';
+
+// ============================================================================
+// 自包含的企微消息发送（cron 插件运行在独立的 [plugins] 上下文，无法
+// 访问 [gateway] 注册的 channel.outbound，因此需要直接调用企微 API）
+// ============================================================================
+const _accessTokenCaches = new Map(); // key: corpId:corpSecret
+
+async function getWecomAccessTokenDirect(corpId, corpSecret) {
+  const cacheKey = `${corpId}:${corpSecret}`;
+  let cache = _accessTokenCaches.get(cacheKey);
+  if (!cache) {
+    cache = { token: null, expiresAt: 0, refreshPromise: null };
+    _accessTokenCaches.set(cacheKey, cache);
+  }
+
+  const now = Date.now();
+  if (cache.token && cache.expiresAt > now + 60000) {
+    return cache.token;
+  }
+  if (cache.refreshPromise) return cache.refreshPromise;
+  cache.refreshPromise = (async () => {
+    try {
+      const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(corpId)}&corpsecret=${encodeURIComponent(corpSecret)}`;
+      const res = await fetch(tokenUrl);
+      const json = await res.json();
+      if (!json?.access_token) throw new Error(`WeCom gettoken failed: ${JSON.stringify(json)}`);
+      cache.token = json.access_token;
+      cache.expiresAt = Date.now() + (json.expires_in || 7200) * 1000;
+      return cache.token;
+    } finally {
+      cache.refreshPromise = null;
+    }
+  })();
+  return cache.refreshPromise;
+}
+
+async function sendWecomTextDirect({ corpId, corpSecret, agentId, toUser, text, logger }) {
+  const accessToken = await getWecomAccessTokenDirect(corpId, corpSecret);
+  const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
+  const body = {
+    touser: toUser,
+    msgtype: "text",
+    agentid: agentId,
+    text: { content: text },
+    safe: 0,
+  };
+  const res = await fetch(sendUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (json?.errcode !== 0) {
+    throw new Error(`WeCom send failed: ${JSON.stringify(json)}`);
+  }
+  logger?.info?.(`[fitness-cron] WeChat message sent to ${toUser} ok`);
+  return json;
+}
 
 // ============================================================================
 // Cron-like Notification Plugin for Fitness Coach
 // ============================================================================
 
-export default function registerFitnessCronPlugin(api) {
+export default function registerFitnessCronPlugin(api, opts) {
   const logger = api.logger;
   logger?.info?.("fitness-cron-plugin initializing...");
 
@@ -40,6 +99,24 @@ export default function registerFitnessCronPlugin(api) {
           }
       }
       return path.join(os.homedir(), ".openclaw"); // 兜底返回
+  }
+
+  // 暴力从磁盘读取 openclaw.json 获取 binding，解决插件上下文拿不到 binding 的问题
+  function resolveAccountIdFromDisk(agentId) {
+      try {
+          const configPath = path.join(getOpenclawDir(), 'openclaw.json');
+          if (fs.existsSync(configPath)) {
+              const rawCfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+              const bindings = rawCfg.bindings || [];
+              const binding = bindings.find(b => b.agentId === agentId && b.match?.channel === "wecom");
+              if (binding?.match?.accountId) {
+                  return binding.match.accountId;
+              }
+          }
+      } catch (e) {
+          api.logger.error?.(`[fitness-cron] Failed to resolve bindings from openclaw.json on disk: ${e.message}`);
+      }
+      return null;
   }
 
   // 动态获取某个 agent 的独立 workspace users 目录
@@ -106,19 +183,10 @@ export default function registerFitnessCronPlugin(api) {
     }
   }
 
-  // 启动时遍历所有实际存在的 Agents 工作区挂载的 Users 目录
+  // 启动时仅读取当前生效的 Agent 的提醒数据
   try {
-      const openclawDir = getOpenclawDir();
-      logger?.info?.(`[fitness-cron] Probed .openclaw root directory at: ${openclawDir}`);
-      if (fs.existsSync(openclawDir)) {
-          const files = fs.readdirSync(openclawDir, { withFileTypes: true });
-          for (const file of files) {
-              if (file.isDirectory() && file.name.startsWith("workspace-")) {
-                  const agentId = file.name.substring("workspace-".length);
-                  loadRemindersForAgent(agentId);
-              }
-          }
-      }
+      logger?.info?.(`[fitness-cron] Loading reminders for current agent: ${currentAgentId}`);
+      loadRemindersForAgent(currentAgentId);
   } catch (e) {
       logger?.error?.(`[fitness-cron] Failed to scan agent workspaces: ${e.message}`);
   }
@@ -136,20 +204,24 @@ export default function registerFitnessCronPlugin(api) {
           type: "string",
           description: "目标用户的 WeCom_ID (如 HuangHui)",
         },
+        cronExpression: {
+            type: "string",
+            description: "（推荐）设定的 Cron 表达式，如 '0 8 * * *' 代表每天上午 8 点。如果使用该参数，下面的 targetHour 和 frequency 可以忽略。",
+        },
         targetHour: {
             type: "string",
-            description: "设定在今天的几点提醒（0-23的整数数字）。如果是每天，那么会在每天的这个小时触发。",
+            description: "（兼容用法）设定在今天的几点提醒（0-23的整数数字）。如果提供了 cronExpression 则忽略此项。",
         },
         frequency: {
             type: "string",
-            description: "提醒的频率。可选值：'once'(仅执行一次)，'daily'(每天)，'workdays'(工作日)，'weekends'(周末)。如果要求特定的星期几（如每周一、三、五），请直接传入数字逗号分隔，例如 '1,3,5'（1表示周一，0表示周日）。",
+            description: "（兼容用法）提醒的频率。可选值：'once', 'daily', 'workdays', 'weekends' 等。如果要求特定的星期几请传入数字逗号分隔。如果提供了 cronExpression 则忽略此项。",
         },
         taskType: {
             type: "string",
             description: "提醒内容的简短类型（例如：'喝水提醒', '晨练提醒'）",
         }
       },
-      required: ["wecomId", "targetHour", "frequency", "taskType"],
+      required: ["wecomId", "taskType"], // 保留最小必填集合
     },
     // 一些底层的版本可能是 handler, 有些是 execute，我们同时提供保证兼容
     handler: async (args, ctx) => executeRemind(args, ctx),
@@ -158,23 +230,34 @@ export default function registerFitnessCronPlugin(api) {
 
   async function executeRemind(args, ctx) {
       try {
-        let { wecomId, targetHour, frequency, taskType } = args;
+        let { wecomId, targetHour, frequency, taskType, cronExpression } = args;
         
-        targetHour = parseInt(targetHour, 10);
-        
-        // 兼容旧参数 recurring
-        if (!frequency && args.recurring !== undefined) {
-             frequency = (args.recurring === "true" || args.recurring === true) ? "daily" : "once";
+        if (cronExpression) {
+            try {
+                cronParser.parseExpression(cronExpression); // 验证格式
+            } catch (e) {
+                return `设定的 Cron 表达式无效: ${e.message}`;
+            }
+        } else {
+            if (targetHour === undefined || !frequency) {
+                return `如果没有使用 cronExpression，则必须提供 targetHour 和 frequency`;
+            }
+            targetHour = parseInt(targetHour, 10);
+            
+            // 兼容旧参数 recurring
+            if (!frequency && args.recurring !== undefined) {
+                 frequency = (args.recurring === "true" || args.recurring === true) ? "daily" : "once";
+            }
+            if (!frequency) frequency = "daily"; // 兜底
         }
-        if (!frequency) frequency = "daily"; // 兜底
 
         // 获取触发该任务的通道源信息
         // 由于底层的 pi-coding-agent 在 execute 时完全剥离了 ctx，我们无法拿到 sessionKey
         // 因此我们直接从 Plugin 加载时的全局 api 实例里读取当前环境所属的 Agent
         let agentId = currentAgentId; 
         
-        // 至于 accountId，优先从网关挂载配置里读取（如果有），否则对于私教号无伤大雅
-        let accountId = api.runtime?.config?.wecom?.accountId || "default";
+        // 动态查找真实绑定的 accountId（解决 agentId="fitness-coach" 但 accountId="fitness-coach-cs" 的不一致问题）
+        let accountId = resolveAccountIdFromDisk(currentAgentId) || currentAgentId;
 
         // 智能匹配大小写文件夹 (解决 linux 大小写敏感导致的黄辉存两份问题)
         const usersDir = getAgentUsersDir(agentId);
@@ -188,24 +271,30 @@ export default function registerFitnessCronPlugin(api) {
         }
 
         // 生成唯一标识
-        const reminderId = `${finalWecomId}_${targetHour}`;
+        const reminderId = cronExpression ? `${finalWecomId}_cron_${Date.now()}` : `${finalWecomId}_${targetHour}`;
         
         activeReminders.set(reminderId, {
             wecomId: finalWecomId,
+            cronExpression,
             targetHour,
             frequency,
             taskType,
             accountId,
             agentId,
-            lastTriggeredDate: null 
+            lastTriggeredDate: null,
+            lastTriggeredMinute: null
         });
 
         // 保存到磁盘
         saveReminders();
 
-        logger?.info?.(`[fitness-cron] Set reminder for ${finalWecomId} at hour ${targetHour}, frequency=${frequency}, task=${taskType}`);
+        logger?.info?.(`[fitness-cron] Set reminder for ${finalWecomId} task=${taskType}, cron=${cronExpression}, hour=${targetHour}`);
         
-        return `已经成功为 ${finalWecomId} 设定了 ${targetHour} 点的定时提醒任务 [频率: ${frequency}, 任务: ${taskType}]. 到时候我会主动给你发送系统指令让你提醒他。`;
+        if (cronExpression) {
+            return `已经成功为 ${finalWecomId} 设定了基于 Cron 表达式 (${cronExpression}) 的定时提醒任务 [任务: ${taskType}].`;
+        } else {
+            return `已经成功为 ${finalWecomId} 设定了 ${targetHour} 点的定时提醒任务 [频率: ${frequency}, 任务: ${taskType}]. 到时候我会主动给你发送系统指令让你提醒他。`;
+        }
 
       } catch (err) {
         logger?.error?.(`fitness_remind tool failed: ${err.message}`);
@@ -223,41 +312,73 @@ export default function registerFitnessCronPlugin(api) {
         const currentDay = now.getDay(); // 0 是周日, 1-5 是周一至五, 6 是周六
         const currentDateStr = now.toISOString().split('T')[0];
 
+        const currentMinuteStr = now.toISOString().substring(0, 16);
+
+        logger?.info?.(`[fitness-cron] heartbeat: checking ${activeReminders.size} reminders at ${now.toLocaleString()}`);
+
         for (const [id, reminder] of activeReminders.entries()) {
-            // 兼容旧数据的 recurring
+            let shouldTriggerNow = false;
             let finalFreq = reminder.frequency;
-            if (!finalFreq && reminder.recurring !== undefined) {
-                finalFreq = reminder.recurring ? "daily" : "once";
-            }
-            if (!finalFreq) finalFreq = "daily";
-            
-            // 判断今天是否应该执行
-            let shouldRunToday = false;
-            if (finalFreq === "daily" || finalFreq === "once") {
-                shouldRunToday = true;
-            } else if (finalFreq === "workdays" && currentDay >= 1 && currentDay <= 5) {
-                shouldRunToday = true;
-            } else if (finalFreq === "weekends" && (currentDay === 0 || currentDay === 6)) {
-                shouldRunToday = true;
-            } else if (finalFreq.includes(",")) {
-                // 处理 "1,3,5" 这种自定义的星期数列表
-                const daysAllow = finalFreq.split(",").map(d => parseInt(d.trim(), 10));
-                if (daysAllow.includes(currentDay)) {
-                    shouldRunToday = true;
+
+            if (reminder.cronExpression) {
+                // Cron 模式检测
+                try {
+                    const checkTime = new Date(now.getTime() - 60000); // 退回 1 分钟检测下一跳
+                    const interval = cronParser.parseExpression(reminder.cronExpression, { currentDate: checkTime });
+                    const nextRun = interval.next().toDate();
+                    const nextMinuteStr = nextRun.toISOString().substring(0, 16);
+                    if (nextMinuteStr === currentMinuteStr && reminder.lastTriggeredMinute !== currentMinuteStr) {
+                         shouldTriggerNow = true;
+                    }
+                } catch(e) {
+                     logger?.error?.(`[fitness-cron] Cron execution error for ${id}: ${e.message}`);
                 }
-            } else if (!isNaN(parseInt(finalFreq, 10))) {
-                 // 处理单天 "1" (周一) 这种
-                 if (parseInt(finalFreq, 10) === currentDay) shouldRunToday = true;
+                logger?.info?.(`[fitness-cron] check cron ${id}: shouldTriggerNow=${shouldTriggerNow}, cron=${reminder.cronExpression}, currentMinute=${currentMinuteStr}, lastTriggeredMinute=${reminder.lastTriggeredMinute}`);
+            } else {
+                // 兼容旧数据的 recurring
+                if (!finalFreq && reminder.recurring !== undefined) {
+                    finalFreq = reminder.recurring ? "daily" : "once";
+                }
+                if (!finalFreq) finalFreq = "daily";
+                
+                // 判断今天是否应该执行
+                let shouldRunToday = false;
+                if (finalFreq === "daily" || finalFreq === "once") {
+                    shouldRunToday = true;
+                } else if (finalFreq === "workdays" && currentDay >= 1 && currentDay <= 5) {
+                    shouldRunToday = true;
+                } else if (finalFreq === "weekends" && (currentDay === 0 || currentDay === 6)) {
+                    shouldRunToday = true;
+                } else if (finalFreq.includes(",")) {
+                    // 处理 "1,3,5" 这种自定义的星期数列表
+                    const daysAllow = finalFreq.split(",").map(d => parseInt(d.trim(), 10));
+                    if (daysAllow.includes(currentDay)) {
+                        shouldRunToday = true;
+                    }
+                } else if (!isNaN(parseInt(finalFreq, 10))) {
+                     // 处理单天 "1" (周一) 这种
+                     if (parseInt(finalFreq, 10) === currentDay) shouldRunToday = true;
+                }
+
+                logger?.info?.(`[fitness-cron] check ${id}: shouldRunToday=${shouldRunToday}(freq=${finalFreq}, day=${currentDay}), targetHour=${reminder.targetHour}, currentHour=${currentHour}, lastTriggeredDate=${reminder.lastTriggeredDate}, currentDateStr=${currentDateStr}`);
+
+                if (shouldRunToday && reminder.targetHour === currentHour && reminder.lastTriggeredDate !== currentDateStr) {
+                    shouldTriggerNow = true;
+                }
             }
 
-            if (shouldRunToday && reminder.targetHour === currentHour && reminder.lastTriggeredDate !== currentDateStr) {
+            if (shouldTriggerNow) {
                 // 触发条件满足！
-                logger?.info?.(`[fitness-cron] Timer fired for ${reminder.wecomId}! Task: ${reminder.taskType}, Freq: ${finalFreq}`);
+                logger?.info?.(`[fitness-cron] Timer fired for ${reminder.wecomId}! Task: ${reminder.taskType}, Freq/Cron: ${reminder.cronExpression || finalFreq}`);
                 
-                // 标记为今天已触发
-                reminder.lastTriggeredDate = currentDateStr;
+                // 分别标记防重字段
+                if (reminder.cronExpression) {
+                    reminder.lastTriggeredMinute = currentMinuteStr;
+                } else {
+                    reminder.lastTriggeredDate = currentDateStr;
+                }
 
-                if (finalFreq === "once") {
+                if (finalFreq === "once" && !reminder.cronExpression) {
                     activeReminders.delete(id); // 单次任务，触发后即删
                 }
                 
@@ -267,8 +388,16 @@ export default function registerFitnessCronPlugin(api) {
                 // --------- 主动唤醒 Agent 发送通道消息 ---------
                 // 我们构造一个 fake webhook context，伪装成 "[SYSTEM_REMINDER]"，让模型去处理
                 try {
-                    const accountId = reminder.accountId || "default";
                     const agentId = reminder.agentId || "fitness-coach"; // 防御性兜底
+                    let accountId = reminder.accountId || "default";
+
+                    // 动态修正存量数据：如果 accountId 是遗留的 "default" 或直接等于 agentId，尝试通过 bindings 查找真实的 accountId
+                    let resolved = resolveAccountIdFromDisk(agentId);
+                    if (resolved) {
+                        accountId = resolved;
+                    } else if (accountId === "default" && agentId !== "main") {
+                        accountId = agentId;
+                    }
                     
                     // 构造和 inbound 一样的 fake payload 来触发 agent
                     const sessionId = `agent:${agentId}:wecom:${accountId}:${reminder.wecomId}`.toLowerCase();
@@ -298,36 +427,55 @@ export default function registerFitnessCronPlugin(api) {
 
                      const gatewayRuntime = api.runtime;
 
-                     // 写入一个 fake transcript (可选)
-                     // ... 为了轻量，这里省略调用 index.js 的私有 transcript 方法
-                     // 直接调用 dispacth 
-                     const chunkMode = gatewayRuntime.channel.text.resolveChunkMode({}, "wecom", accountId);
-                     
-                     gatewayRuntime.channel.text.dispatchReplyWithBufferedBlockDispatcher(
-                       { api, pluginId: "wecom", sessionKey: sessionId, ctx: ctxPayload },
-                       {},
-                       { chunkMode },
-                       (payload) => {
-                         api.logger.info?.(`[fitness-cron] agent reply generated for ${reminder.wecomId}: ${payload.text}`);
-                         // 必须通过 index.js 下暴露出来的 wecomSendText 或者桥接到外部发信
-                         // 但是为了在外部单独 plugin 中工作，我们可以直接用 bridgeSendToSession，这会让 OpenClaw Gateway 接手通道路由
-                         
-                         // 这里通过通道网关发信 
-                         // 注: 会通过默认企微 webhook 绑定的回信流程。由于我们在独立 js 里比较难拿到 corpSecret，
-                         // 最优雅的方式是我们在 dispatch 回调里，调用 channel outbound (如果是开放的)
-                         if (gatewayRuntime.channel?.outbound?.sendText) {
-                            gatewayRuntime.channel.outbound.sendText({
-                                to: { kind: "dm", id: reminder.wecomId },
-                                accountId: accountId,
-                                text: payload.text,
-                                sessionKey: sessionId
-                            }).catch(e => logger?.error?.(`Send failed: ${e}`));
-                         }
-                         return Promise.resolve();
+                     // 使用完整 gateway config，让 OpenClaw 核心正确解析 auth profile
+                     gatewayRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher(
+                       {
+                           ctx: ctxPayload,
+                           cfg: api.config, // 使用完整 gateway config 以正确解析 auth
+                           dispatcherOptions: {
+                               deliver: async (payload, info) => {
+                                   api.logger.info?.(`[fitness-cron] agent reply for ${reminder.wecomId}: ${payload.text?.slice(0, 80)}...`);
+                                   if (payload.text) {
+                                      try {
+                                          // 直接使用 index.js 注入的 getWecomConfig 函数获取确切的配置
+                                          let corpId, corpSecret, wecomAgentId;
+                                          if (opts && typeof opts.getWecomConfig === 'function') {
+                                              const cfg = opts.getWecomConfig(api, accountId);
+                                              if (cfg) {
+                                                  corpId = cfg.corpId;
+                                                  corpSecret = cfg.corpSecret;
+                                                  wecomAgentId = cfg.agentId;
+                                              }
+                                          }
+
+                                          if (!corpId || !corpSecret || !wecomAgentId) {
+                                              logger?.error?.(`[fitness-cron] WeChat config missing via getWecomConfig for accountId=${accountId}`);
+                                          } else {
+                                              await sendWecomTextDirect({
+                                                  corpId,
+                                                  corpSecret,
+                                                  agentId: Number(wecomAgentId),
+                                                  toUser: reminder.wecomId,
+                                                  text: payload.text,
+                                                  logger
+                                              });
+                                          }
+                                      } catch (e) {
+                                          logger?.error?.(`[fitness-cron] Send failed: ${e}`);
+                                      }
+                                   }
+                               },
+                               onError: (err, info) => {
+                                   logger?.error?.(`[fitness-cron] Dispatch reply error: ${err}`);
+                               }
+                           },
+                           replyOptions: {
+                               disableBlockStreaming: true
+                           }
                        }
                      );
                 } catch(dispatchErr) {
-                    logger?.error?.(`[fitness-cron] Failed to dispatch reminder for ${reminder.wecomId}: ${dispatchErr}`);
+                    logger?.error?.(`[fitness-cron] Failed to dispatch reminder for ${reminder.wecomId}: ${dispatchErr.stack || dispatchErr}`);
                 }
             }
         }

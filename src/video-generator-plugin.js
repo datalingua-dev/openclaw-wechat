@@ -122,7 +122,7 @@ async function generateViaGoogleVeo({ prompt, apiKey, apiUrl, model, logger }) {
     
     // 生成视频文件的临时存储路径
     const tempDir = os.tmpdir();
-    const fileName = `google-veo-${Date.now()}.mp4`;
+    const fileName = `google-veo-${Date.now()}-${Math.random().toString(36).substring(2)}.mp4`;
     const tempFilePath = path.join(tempDir, fileName);
     
     // 解码并保存到本地

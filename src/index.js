@@ -1398,7 +1398,7 @@ export default function register(api) {
 
   // 注册 Fitness 教练专用的定时提醒插件
   try {
-    registerFitnessCronPlugin(api);
+    registerFitnessCronPlugin(api, { getWecomConfig });
   } catch (err) {
     api.logger.error?.(`wecom: failed to register fitness cron plugin: ${err.message}`);
   }
